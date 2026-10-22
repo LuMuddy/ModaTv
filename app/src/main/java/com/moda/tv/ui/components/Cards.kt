@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -37,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
@@ -102,16 +104,28 @@ private val HERO_THUMB_WIDTH = 72.dp
 private val HERO_THUMB_HEIGHT = 100.dp
 
 /**
- * 缩略图行的可视槽位数。容器宽度按它算，必须与 [HERO_THUMB_VISIBLE] 同源：
- * 两处各写一个数字时宽度与实际卡数一旦对不上，最后一张必然被容器从中间切断。
+ * 缩略图行的可视槽位数：4.5 张。
+ * 整张卡收在"4 张 + 第 5 张露一半"，那半张就是「后面还有」的提示——
+ * 显示整整 5 张反而看不出还有没有更多。
  */
-private const val HERO_THUMB_VISIBLE = 5
+private const val HERO_THUMB_VISIBLE = 4.5f
 
 /** 缩略图之间的间距，宽度预算与 LazyRow 的 horizontalArrangement 都引用它 */
 private val HERO_THUMB_GAP = 8.dp
 
-/** 缩略图行左右内边距：聚焦放大 1.06 与 3dp 描边都画在框外，贴边必被裁 */
-private val HERO_THUMB_STRIP_PAD = 12.dp
+/**
+ * 焦点白描边要的溢出余量。
+ *
+ * 放大 1.06 → 每边多出 (72 × 0.06) / 2 ≈ 2.2dp，外加 3dp 描边画在形状之外，
+ * 合计约 5.2dp。这个余量必须由 LazyRow 自己的 contentPadding 提供：
+ * 画在 LazyRow 之外（外层 Box 的 padding/modifier）是没用的——
+ * LazyRow 会按自己的视口裁掉子项溢出，贴在视口边缘的那张白边就只剩一半。
+ * 取 8dp 给亚像素与描边抗锯齿留一点富余。
+ */
+private val HERO_THUMB_FOCUS_ROOM = 8.dp
+
+/** 缩略图行左右内边距：既是视觉留白，也承载焦点描边的溢出余量 */
+private val HERO_THUMB_STRIP_PAD = HERO_THUMB_FOCUS_ROOM
 
 /**
  * ============ 可聚焦元素内的文字配色规则（务必遵守） ============
@@ -356,6 +370,9 @@ private fun HeroStage(
         Column(
             Modifier
                 .align(Alignment.CenterStart)
+                // 整块文案上移：轮播缩略图压在右下角，文案居中时下半部分
+                // 正好和缩略图行挤在同一条水平线上。上移 34dp 让两者彻底错开。
+                .offset(y = (-34).dp)
                 .padding(start = 40.dp, end = 40.dp)
                 // 文案区收到 52%：给右下角缩略图留出不重叠的空间
                 .fillMaxWidth(0.52f),
@@ -510,10 +527,21 @@ fun HeroCarousel(
      * 缩略图行既能左右扫、又会实时驱动上方大图，作为入口更顺手。
      */
     thumbFocusRequester: FocusRequester? = null,
+    /** 轮播真正获得焦点时回调。调用方不能靠 requestFocus() 的返回值判断——节点未上树时它照样返回成功 */
+    onFocused: () -> Unit = {},
+    /**
+     * 最后一张缩略图按右键的去处（首页传第一行的首卡）。
+     *
+     * 不指定的话，Compose 按几何位置找右邻：缩略图行在屏幕右侧，
+     * 右上角工具栏的「设置」离得更近，于是焦点飞到了右上角——用户只想继续往下看电视行。
+     */
+    rightEdgeFocus: FocusRequester? = null,
 ) {
     // 列表变了要回到首条，否则越界下标会让大图空白
     var index by remember(items) { mutableStateOf(0) }
-    // 焦点是否在缩略图行里：自动轮播的暂停条件
+    // 焦点是否真的在缩略图行里（由各张缩略图的 onFocusChanged 上报）。
+    // 这是自动轮播的唯一开关：只在用户把焦点停在轮播上时才轮播，
+    // 焦点移到下面内容行时完全停住，不碰 index、不滚动、更不抢焦点。
     var thumbsFocused by remember { mutableStateOf(false) }
     // 每次手动操作 +1，用来重置自动轮播的计时
     var userTick by remember { mutableStateOf(0) }
@@ -538,26 +566,45 @@ fun HeroCarousel(
         if (!multiple) return@LaunchedEffect
         while (true) {
             delay(intervalMs)
-            // 焦点是否需要跟着走，必须在动任何状态**之前**取样：
-            // 改 index 会触发重组，滚动又会销毁被回收的旧项（连同焦点），
-            // 之后再读 thumbsFocused 就已经读不到「用户原本停在缩略图行」这个事实了。
-            val followFocus = thumbsFocused
+            // 只有焦点停在缩略图行里才轮播。
+            //
+            // 这条规则以前写成「遍历 key 里带 thumbsFocused，聚焦时直接 return」，
+            // 结果是：焦点在轮播上 → 协程被取消，状态还停在「有焦点」；
+            // 用户把焦点移到下面内容行后，key 虽然变了，但此刻恰好有焦点元素
+            // （内容卡片）接手，轮播的 FocusRequester 已经失效，
+            // 焦点在切换瞬间掉回工具栏的搜索图标 —— 这就是「移动到别的地方就丢失光标」。
+            //
+            // 现在：协程只在多项或手动操作时重建，是否轮播由循环体内的实时判断决定；
+            // 并且全程不碰焦点，焦点只由用户的方向键决定。轮播只负责换大图与滚动缩略图行。
+            // 焦点不在轮播上就什么都不做：不换大图、不滚动、不抢焦点。
+            if (!thumbsFocused) continue
             val next = (index + 1) % items.size
-            index = next
-            // 顺序很关键：先把列表滚到目标项、等它被组合出来，再 requestFocus。
-            // 否则目标项根本还没上树，requestFocus 抛异常被 runCatching 吞掉。
-            runCatching { thumbListState.animateScrollToItem(next) }
-            if (!followFocus) continue
-            // 重试若干帧再放弃：滚动那一瞬间目标项可能还没完成布局，
-            // 单次失败后焦点会掉回工具栏（几何位置最靠前的可聚焦元素）。
+            // 先把焦点挪到下一张，再滚动。
+            // 顺序反了的话，滚动会先回收掉当前这张（连同挂在上面的焦点），
+            // 焦点就被丢到几何最近的可聚焦元素上——也就是工具栏的搜索图标。
+            // 相邻两张几乎总在同一屏内，所以这一步通常不用滚动就能成功。
             val req = thumbRequesters.getOrNull(next)
+            var moved = false
             if (req != null) {
-                // repeat {} 里的 return@repeat 只是"跳过本次"，不会退出循环，
-                // 所以这里用 for + break 才能在抢到焦点后真正停下来。
-                for (attempt in 0 until 10) {
+                for (attempt in 0 until 3) {
                     withFrameNanos { }
-                    if (runCatching { req.requestFocus() }.isSuccess) break
+                    if (runCatching { req.requestFocus() }.isSuccess) { moved = true; break }
                 }
+            }
+            if (!moved) {
+                // 抢不到焦点就这一轮作废：宁可晚 8 秒再翻，
+                // 也不能出现「大图换了、白框留在旧的一张」的错位。
+                continue
+            }
+            index = next
+            // 焦点已经在新的一张上，此时滚动不会再丢焦点；
+            // 只在目标项还没露出来时才动列表。
+            val inView = thumbListState.layoutInfo.visibleItemsInfo.any { it.index == next }
+            if (!inView) {
+                // 以前这一步永远执行不到（协程先被取消），
+                // 大图往前走、下面那排始终停在前几张上，
+                // 超过可见范围后就整排没有白框——「没显示到对应位置」就是这么来的。
+                runCatching { thumbListState.animateScrollToItem(next) }
             }
         }
     }
@@ -594,52 +641,43 @@ fun HeroCarousel(
             Box(
                 Modifier
                     .align(Alignment.BottomEnd)
-                    // 留出 18dp：缩略图聚焦会放大 1.06 并画 3dp 描边，
-                    // 贴边时描边会被父容器裁掉一半——这就是「光标只剩半边」的成因。
-                    .padding(end = 18.dp, bottom = 16.dp)
-                    // 宽度 = 内容宽 + 两侧内边距，三项同源，不再各写一个数字。
-                    // 这里曾经写成「宽 392dp + padding start 12 / end 6」：
-                    // 实际内容只剩 374dp，装不下 5 张卡（392dp），
-                    // 配合 wrapContentSize(BottomEnd) 的末端对齐，
-                    // 整行被向左顶出 18dp——首张卡的白描边正好被裁掉，
-                    // 同时右端又露出半张卡。两个症状同一个算式错误。
+                    // 右下角再让出一点：整排往右下压，贴着大图边缘放
+                    .padding(end = 10.dp, bottom = 4.dp)
+                    // 宽度 = 4.5 张卡 + 4 段间距 + 两侧余量，全部同源。
+                    // 这里的余量是给 LazyRow 的 contentPadding 预留空间用的（见下），
+                    // 容器本身不再加 padding——留白必须落在视口**内侧**，否则等于没留。
                     .width(
-                        // Dp 只定义了 Dp * Int：乘数写在前面的 Int 无法推导，必须把 Dp 放左边
                         HERO_THUMB_WIDTH * HERO_THUMB_VISIBLE +
-                            HERO_THUMB_GAP * (HERO_THUMB_VISIBLE - 1) +
-                            HERO_THUMB_STRIP_PAD * 2,
+                            HERO_THUMB_GAP * (HERO_THUMB_VISIBLE.toInt() - 1) +
+                            HERO_THUMB_FOCUS_ROOM * 2,
                     )
-                    // 底部压一层右深左浅的渐变：缩略图压在海报上时边界更清楚
-                    .background(
-                        Brush.horizontalGradient(
-                            listOf(Color.Transparent, Color.Black.copy(alpha = 0.5f)),
-                        ),
-                    )
-                    // 左右留出 12dp：聚焦放大 1.06（每边约 2dp）+ 3dp 描边要画在框外，
-                    // 贴边时必被裁。上下同理，各留 5dp。
-                    .padding(
-                        horizontal = HERO_THUMB_STRIP_PAD,
-                        vertical = 5.dp,
-                    ),
+                // 不再压任何底色/渐变：那层灰黑蒙版在海报上显出一条脏边，
+                // 缩略图本身有圆角与描边，边界已经够清楚。
             ) {
             LazyRow(
                 state = thumbListState,
                 horizontalArrangement = Arrangement.spacedBy(HERO_THUMB_GAP),
+                // 留白必须写在 LazyRow 的 contentPadding 里，不能写在外层 modifier：
+                // LazyRow 按自身视口裁剪子项，画在视口之外的白描边照样被切掉。
+                // contentPadding 属于视口内部，第 0 张卡的焦点描边因此完整可见。
+                // 上下也留同样的余量：LazyRow 的子项是顶部对齐的，
+                // 只给横向 padding 会让卡片浮在顶部、下边空出一条。
+                contentPadding = PaddingValues(HERO_THUMB_FOCUS_ROOM),
                 // LazyRow 在 Box 里默认会被撑满，这里必须显式 wrapContent，否则缩略图不可见
                 modifier = Modifier
                     .wrapContentSize(Alignment.BottomEnd)
-                    // 高度要留出放大与描边的余量：+18dp（10dp 内容余量 + 8dp 描边溢出）
-                    .height(HERO_THUMB_HEIGHT + 18.dp)
-                    .onFocusChanged { thumbsFocused = it.hasFocus },
+                    // 高度同样要给描边留余量：聚焦放大 + 3dp 描边会超出卡片高度
+                    .height(HERO_THUMB_HEIGHT + HERO_THUMB_FOCUS_ROOM * 2),
             ) {
-                // 只渲染前 5 条：容器宽度正好是 5 张卡（5×72 + 4×8 = 392dp），
-                // 多出的第 6 条会被容器边界从中间切断，看起来像渲染错误。
-                // 要看第 6 条往右滚动即可（它会在滚动后成为可见项）。
+                // 全部条目都交给 LazyRow 管理，容器宽度决定露出几张：
+                // 4.5 张（4 整张 + 第 5 张只露一半），右端那半张就是「还有更多」的提示。
                 items(count = items.size, key = { i -> "hero-thumb-" + items[i].cid }) { i ->
                     val item = items[i]
                     HeroThumb(
                         item = item,
-                        selected = i == index,
+                        // 只有焦点真的停在轮播上时才显示「选中」（白框 + 取消压暗）。
+                        // 焦点移走后整排恢复常态：没有选中项，也一眼看得出「这里当前不是活动区」。
+                        selected = thumbsFocused && i == index,
                         onClick = {
                             // 直接进详情。
                             //
@@ -663,10 +701,27 @@ fun HeroCarousel(
                                     }
                                 }.reduceOrNull { a, b -> a.then(b) } ?: Modifier,
                             )
+                            // 最后一张再按右键：交回调用方指定的表项（首页即第一行首卡）。
+                            // 不接管的话 Compose 会按比例找右邻矩形的中心，
+                            // 缩略图贴着屏幕右侧，右上角工具栏的「设置」反而更近，焦点就飞上去了。
+                            .then(
+                                if (i == items.lastIndex && rightEdgeFocus != null) {
+                                    Modifier.focusProperties { right = rightEdgeFocus }
+                                } else {
+                                    Modifier
+                                },
+                            )
                             // 不要再叠 clickable：HeroThumb 内部已经是 Card(onClick)，
                             // 外层再套一层可点击修饰符会让两者争抢确认键，实测表现为"只切图不进详情"。
                             // 只保留焦点监听（用于驱动大图跟随），点击语义完全交给 Card。
                             .onFocusChanged { state ->
+                                // 记录焦点是否停在这一行：自动轮播与选中高亮都以此为准。
+                                // hasFocus 覆盖「自己或子孙获得焦点」，这里卡片自己就是叶子，
+                                // 失焦时会如实回到 false，所以离开轮播就能立刻停住。
+                                thumbsFocused = state.hasFocus
+                                if (state.hasFocus) {
+                                    onFocused()
+                                }
                                 if (state.isFocused && index != i) {
                                     index = i
                                     userTick++
