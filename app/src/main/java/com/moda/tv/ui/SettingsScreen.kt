@@ -77,6 +77,29 @@ import kotlinx.coroutines.launch
 /** 设置页的一条操作反馈：成功用普通色，失败用 Danger，肉眼可分辨 */
 private data class Notice(val text: String, val failed: Boolean)
 
+/** 设置页三行「清空」对应的一次确认：标题、警示文案与完成提示跟着它走 */
+private enum class PendingClear(
+    val title: String,
+    val message: String,
+    val doneText: String,
+) {
+    History(
+        title = "清空全部播放记录？",
+        message = "将清空所有观看记录与播放进度，删除后无法恢复。",
+        doneText = "已清除播放记录",
+    ),
+    Favorites(
+        title = "清空全部收藏？",
+        message = "将清空所有收藏，删除后无法恢复。",
+        doneText = "已清除收藏",
+    ),
+    SearchHistory(
+        title = "清空全部搜索历史？",
+        message = "将清空全部搜索历史，删除后无法恢复。",
+        doneText = "已清除搜索历史",
+    ),
+}
+
 /**
  * 设置页：只读信息 + 代理网址 + 数据清理。
  *
@@ -117,6 +140,8 @@ fun SettingsScreen(
     var draft by remember { mutableStateOf(apiBase) }
     var checking by remember { mutableStateOf(false) }
     var notice by remember { mutableStateOf<Notice?>(null) }
+    // 三行的「清空」都是不可撤销的批量删除，点一下先弹确认，确认后才真正清除
+    var pendingClear by remember { mutableStateOf<PendingClear?>(null) }
 
     val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
@@ -326,28 +351,19 @@ fun SettingsScreen(
                         label = "清除播放记录",
                         value = "清空",
                         chevron = true,
-                        onClick = {
-                            onClearHistory()
-                            notice = Notice("已清除播放记录", failed = false)
-                        },
+                        onClick = { pendingClear = PendingClear.History },
                     )
                     SettingRow(
                         label = "清除收藏",
                         value = "清空",
                         chevron = true,
-                        onClick = {
-                            onClearFavorites()
-                            notice = Notice("已清除收藏", failed = false)
-                        },
+                        onClick = { pendingClear = PendingClear.Favorites },
                     )
                     SettingRow(
                         label = "清除搜索历史",
                         value = "清空",
                         chevron = true,
-                        onClick = {
-                            onClearSearchHistory()
-                            notice = Notice("已清除搜索历史", failed = false)
-                        },
+                        onClick = { pendingClear = PendingClear.SearchHistory },
                     )
                 }
             }
@@ -371,6 +387,24 @@ fun SettingsScreen(
                 )
             }
         }
+    }
+
+    // 清空确认：三行共用同一个弹窗，标题、文案与真正执行的动作都由 pendingClear 决定
+    pendingClear?.let { pending ->
+        ClearConfirmDialog(
+            title = pending.title,
+            message = pending.message,
+            onConfirm = {
+                pendingClear = null
+                when (pending) {
+                    PendingClear.History -> onClearHistory()
+                    PendingClear.Favorites -> onClearFavorites()
+                    PendingClear.SearchHistory -> onClearSearchHistory()
+                }
+                notice = Notice(pending.doneText, failed = false)
+            },
+            onDismiss = { pendingClear = null },
+        )
     }
 
     // 扫码配置弹窗：服务在它进入组合时启动、离开组合时停止（见 LanConfigDialog 的 DisposableEffect）

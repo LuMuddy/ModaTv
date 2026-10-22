@@ -67,6 +67,8 @@ fun HistoryScreen(
 ) {
     val firstCardFocus = remember { FocusRequester() }
     var firstFocusDone by remember { mutableStateOf(false) }
+    // 「清空全部」不可撤销，遥控器上半点失误就是全删：先弹确认，不直接调用 onClear
+    var confirmClear by remember { mutableStateOf(false) }
 
     // 首帧布局完成前 requestFocus 会直接抛，等两帧再抢焦点。
     // 空态没有可聚焦元素是不成问题的：返回键由 AppRoot 全局接，不依赖焦点落在哪个控件上。
@@ -93,7 +95,11 @@ fun HistoryScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Text("历史记录 ${entries.size} 条", style = TvHeading, color = ModaColors.Text)
-            ActionButton(text = "清空全部", onClick = onClear, enabled = entries.isNotEmpty())
+            ActionButton(
+                text = "清空全部",
+                onClick = { confirmClear = true },
+                enabled = entries.isNotEmpty(),
+            )
         }
 
         Spacer(Modifier.height(24.dp))
@@ -120,6 +126,18 @@ fun HistoryScreen(
                 }
             }
         }
+    }
+
+    if (confirmClear) {
+        ClearConfirmDialog(
+            title = "清空全部历史记录？",
+            message = "将删除 ${entries.size} 条观看记录及其播放进度，删除后无法恢复。",
+            onConfirm = {
+                confirmClear = false
+                onClear()
+            },
+            onDismiss = { confirmClear = false },
+        )
     }
 }
 
