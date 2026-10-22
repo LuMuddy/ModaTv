@@ -40,7 +40,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
@@ -291,8 +290,21 @@ fun PlayerScreen(
         if (focusedSlot !in slots) focusedSlot = slots.first()
     }
 
-    fun anyPanelVisible(): Boolean = tierPanelVisible || speedPanelVisible ||
-        danmakuPanelVisible || episodePanelVisible || aspectPanelVisible
+    /**
+     * 当前展开的浮窗（L2）；没有浮窗返回 null（此时是 L1 控制条或 L0 纯净播放）。
+     * 五个 boolean 按互斥关系收敛成一个值，按键分派只认它，
+     * 避免每加一个浮窗就要在左右键/上下键/确认键/返回键四处各改一遍。
+     */
+    fun activePanelSlot(): OsdSlot? = when {
+        tierPanelVisible -> OsdSlot.Quality
+        episodePanelVisible -> OsdSlot.Episode
+        speedPanelVisible -> OsdSlot.Speed
+        danmakuPanelVisible -> OsdSlot.Danmaku
+        aspectPanelVisible -> OsdSlot.Aspect
+        else -> null
+    }
+
+    fun anyPanelVisible(): Boolean = activePanelSlot() != null
 
     fun closePanels() {
         tierPanelVisible = false
@@ -319,29 +331,60 @@ fun PlayerScreen(
         updateSettings(adjustDanmaku(settings, item, delta))
     }
 
+    /** 槽位在 L1（控制条层）里上下循环，[delta] = -1 向上、+1 向下 */
+    fun moveSlot(delta: Int) {
+        val i = slots.indexOf(focusedSlot)
+        focusedSlot = slots[(i + delta + slots.size) % slots.size]
+    }
+
+    /** 收起当前浮窗，回到 L1 控制条层 */
+    fun closeActivePanel() {
+        when (activePanelSlot()) {
+            OsdSlot.Quality -> tierPanelVisible = false
+            OsdSlot.Episode -> episodePanelVisible = false
+            OsdSlot.Speed -> speedPanelVisible = false
+            OsdSlot.Danmaku -> danmakuPanelVisible = false
+            OsdSlot.Aspect -> aspectPanelVisible = false
+            OsdSlot.Intro, OsdSlot.Outro, null -> Unit
+        }
+    }
+
     /**
-     * 面板展开时上下键移动面板焦点：上键 [delta] = -1、下键 +1。
-     * 左右键在播放页永远属于进度条（用户要的就是"任何弹窗下都能拖进度"），
-     * 所以面板里的选项只能走这条路径，返回值表示这次按键是否被面板吃掉。
+     * L2 浮窗里的左右键。返回 false 表示当前这一层不认左右键。
+     *
+     * 是否认键由 [OsdSlot.horizontalPanel] 唯一的声明决定，这里只负责执行：
+     * 横向浮窗（倍速/比例/选集）左右键有意义，纵向浮窗（清晰度/弹幕）没有。
      */
-    fun movePanelFocus(delta: Int): Boolean = when {
-        episodePanelVisible -> {
-            focusedEpisodeIndex = (focusedEpisodeIndex + delta)
+    fun movePanelSelection(delta: Int): Boolean {
+        val slot = activePanelSlot() ?: return false
+        if (!slot.horizontalPanel) return false
+        when (slot) {
+            // 档位条选中即生效：移动就是改值，不需要再按确认
+            OsdSlot.Speed -> cycleSpeed(delta)
+            OsdSlot.Aspect -> cycleAspect(delta)
+            // 横滑选集：左右只移焦点，确认键才真正切集
+            OsdSlot.Episode -> focusedEpisodeIndex = (focusedEpisodeIndex + delta)
                 .coerceIn(0, episodes.lastIndex.coerceAtLeast(0))
-            true
+            else -> Unit
         }
-        // 倍速 / 比例是「选中即生效」的单行档位，移动焦点就是改值
-        speedPanelVisible -> { cycleSpeed(delta); true }
-        aspectPanelVisible -> { cycleAspect(delta); true }
-        danmakuPanelVisible -> {
-            focusedDanmakuItem = (focusedDanmakuItem + delta).mod(DanmakuItems.size)
-            true
+        return true
+    }
+
+    /**
+     * L2 浮窗里的上下键，语义与 [movePanelSelection] 对称：
+     * 纵向浮窗（清晰度/弹幕）里它是导航；横向浮窗里它不导航，交给 L1。
+     */
+    fun movePanelFocus(delta: Int): Boolean {
+        val slot = activePanelSlot() ?: return false
+        if (slot.horizontalPanel) return false
+        when (slot) {
+            OsdSlot.Danmaku ->
+                focusedDanmakuItem = (focusedDanmakuItem + delta).mod(DanmakuItems.size)
+            OsdSlot.Quality ->
+                focusedTierIndex = (focusedTierIndex + delta).mod(tiers.size.coerceAtLeast(1))
+            else -> Unit
         }
-        tierPanelVisible -> {
-            focusedTierIndex = (focusedTierIndex + delta).mod(tiers.size.coerceAtLeast(1))
-            true
-        }
-        else -> false
+        return true
     }
 
     fun openEpisodePanel() {
@@ -466,6 +509,17 @@ fun PlayerScreen(
         positionMs = target
         seekAccumMs += deltaMs
         seekHintTick++
+    }
+
+    /** 左右键的唯一出口：浮窗认键就交给浮窗，不认就静默，只有 L1/L0 才快进快退 */
+    fun dispatchHorizontal(delta: Int) {
+        if (movePanelSelection(delta)) {
+            showOsd()
+            return
+        }
+        if (anyPanelVisible()) return
+        seekBy(delta * SeekStepMs)
+        if (osdVisible) showOsd()
     }
 
     /**
@@ -607,7 +661,7 @@ fun PlayerScreen(
                             return@onKeyEvent true
                         }
                         when {
-                            // 选集浮层里确认键直接切集
+                            // 选集是横滑列表：左右移焦点，确认键在这里真正切集
                             episodePanelVisible -> {
                                 episodes.getOrNull(focusedEpisodeIndex)?.let { episode ->
                                     episodePanelVisible = false
@@ -615,9 +669,10 @@ fun PlayerScreen(
                                     onSelectEpisode(episode)
                                 }
                             }
-                            // 弹幕面板：上下键选子项，确认键改值（开关翻转、档位 +1、边距 +5%）。
-                            // 左右键已交给进度条，这里必须能改值，否则字号/位置根本调不动
+                            // 弹幕面板是纵向表：上下选子项，确认键改值
+                            // （开关翻转、档位 +1、边距 +5%）
                             danmakuPanelVisible -> adjustDanmakuItem(1)
+                            // 清晰度是纵向档位表：上下选档，确认键应用并关闭浮窗
                             tierPanelVisible -> applyTier(focusedTierIndex)
                             // OSD 可见时确认键展开当前槽位的面板
                             osdVisible -> when (focusedSlot) {
@@ -659,31 +714,33 @@ fun PlayerScreen(
                         showOsd()
                         true
                     }
+                    // 按键按「最上层接管」分派（同业内 TV 播放器的模态栈）：
+                    //   L2 横向浮窗 → 左右归浮窗（换档/换集），不快进
+                    //   L2 纵向浮窗 → 左右在这层没有语义，静默吃掉；绝不穿透到进度条，
+                    //                 否则用户以为在选东西，画面却在跳
+                    //   L1 控制条 / L0 纯净播放 → 左右就是快退快进
                     Key.DirectionLeft -> {
-                        // 左右键在播放页只做一件事：拖动进度。
-                        // 之前面板展开时左右键被面板吃掉，用户「开着面板想快进」按下去毫无反应，
-                        // 面板里的选项也因此只能靠盲按——现在面板选项统一交给上下键。
-                        seekBy(-SeekStepMs)
-                        if (osdVisible) showOsd()
+                        dispatchHorizontal(-1)
                         true
                     }
                     Key.DirectionRight -> {
-                        seekBy(SeekStepMs)
-                        if (osdVisible) showOsd()
+                        dispatchHorizontal(1)
                         true
                     }
                     Key.DirectionUp -> {
+                        // 纵向浮窗吃上下键（选档/选子项）；横向浮窗不吃——
+                        // 上下键此时表示「离开这一行」，先收起浮窗回 L1，再换槽位
                         if (!movePanelFocus(-1)) {
-                            val i = slots.indexOf(focusedSlot)
-                            focusedSlot = slots[(i - 1 + slots.size) % slots.size]
+                            closeActivePanel()
+                            moveSlot(-1)
                         }
                         showOsd()
                         true
                     }
                     Key.DirectionDown -> {
                         if (!movePanelFocus(1)) {
-                            val i = slots.indexOf(focusedSlot)
-                            focusedSlot = slots[(i + 1) % slots.size]
+                            closeActivePanel()
+                            moveSlot(1)
                         }
                         showOsd()
                         true

@@ -23,7 +23,7 @@ import com.moda.tv.ui.theme.TvBody
 import com.moda.tv.ui.theme.TvCaption
 
 /**
- * 倍速面板：横向一档一档，上下键换值，选中即生效。
+ * 倍速面板：横向一档一档，左右键换值，选中即生效（与画面方向一致）。
  * 单独成面板而不是塞进综合设置，是为了让遥控器上少一层嵌套。
  */
 @Composable
@@ -57,6 +57,6 @@ fun SpeedPanel(speed: Float, focusedIndex: Int) {
             }
         }
         Spacer(Modifier.height(6.dp))
-        Text("上下键切换，立即生效", style = TvCaption)
+        Text("左右键切换，上下键离开；立即生效", style = TvCaption)
     }
 }
