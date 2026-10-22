@@ -34,6 +34,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -57,6 +58,20 @@ sealed interface PlayerUi {
         val episodes: List<Episode> = emptyList(),
     ) : PlayerUi
 }
+
+/**
+ * 详情页的历史落点：历史里有这部剧时给出那一集的 vid 与下标，没有则 [episodeIndex] = -1。
+ *
+ * [loaded] 用来区分「历史还没读到」和「读到了、但这剧没记录」。
+ * 详情页要等它落定再决定首焦点，否则会先把焦点抢到第 1 集，
+ * 历史到货后选中态和光标就对不上了。[cid] 让详情页能丢掉上一部剧的残留值。
+ */
+data class DetailResume(
+    val cid: String = "",
+    val vid: String = "",
+    val episodeIndex: Int = -1,
+    val loaded: Boolean = false,
+)
 
 /**
  * 页面栈 + 各屏幕的数据装载。
@@ -95,6 +110,37 @@ class TvViewModel(private val app: Context) : ViewModel() {
     val detailIsFavorite: StateFlow<Boolean> = detailCid
         .flatMapLatest { cid -> if (cid.isBlank()) flowOf(false) else favorites.isFavorite(cid) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    /**
+     * 当前详情剧的历史落点。与 [detailIsFavorite] 同构，跟着 [detailCid] 切流，
+     * 从收藏页点进 A、返回、再点进 B 时不会把 A 的集号带过去。
+     *
+     * 直接映射 [HistoryStore.entries] 而不是调一次 get()：详情页停留期间历史若被
+     * 后台补封面改写，这里能跟着刷新，而 StateFlow 对相等的值不重复发射，
+     * 已经落定的光标不会被无谓地重新抢一次。
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val detailResume: StateFlow<DetailResume> = detailCid
+        .flatMapLatest { cid ->
+            if (cid.isBlank()) {
+                flowOf(DetailResume())
+            } else {
+                history.entries.map { list ->
+                    val entry = list.firstOrNull { it.cid == cid }
+                    if (entry == null) {
+                        DetailResume(cid = cid, loaded = true)
+                    } else {
+                        DetailResume(
+                            cid = cid,
+                            vid = entry.vid,
+                            episodeIndex = entry.episodeIndex,
+                            loaded = true,
+                        )
+                    }
+                }
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DetailResume())
 
     /** 页面栈；栈底永远是 Home，因此 size > 1 就等于"按返回键还能退一层" */
     val stack = mutableStateListOf<Dest>(Dest.Home)

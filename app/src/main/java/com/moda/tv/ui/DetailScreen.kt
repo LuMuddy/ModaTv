@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -69,6 +70,13 @@ private val TRAILER_KEYS = listOf(
 private fun isTrailer(ep: Episode): Boolean = TRAILER_KEYS.any { ep.label.contains(it) }
 
 /**
+ * 进详情页时等历史读盘的上限（帧）。
+ * DataStore 是从磁盘读的，正常情况下两帧内必有结果；
+ * 取 ~0.2 秒（12 帧）既是"绝不可能被用户看到"的时长，也保证读盘卡住时焦点不会一直悬空。
+ */
+private const val RESUME_WAIT_FRAMES = 12
+
+/**
  * 剧集详情：标题 + 简介 + 集数横条 + 播放按钮 + 清晰度。
  * 整页用 verticalScroll 而不是 LazyColumn，因为集数条与清晰度条各自是横向 LazyRow，
  * 嵌在两个方向上都可滚动的 lazy 容器里焦点寻路会变得不可预测。
@@ -87,25 +95,62 @@ fun DetailScreen(
     // 尾部可选参数：既有调用点（含测试/预览）不必改动
     isFavorite: Boolean = false,
     onToggleFavorite: () -> Unit = {},
+    /** 历史落点：这部剧看过的话，选中态与首焦点都落在那一集 */
+    resume: DetailResume? = null,
 ) {
-    val playFocus = remember { FocusRequester() }
-    var focusDone by remember { mutableStateOf(false) }
-    var currentIndex by remember(detail?.cid) { mutableStateOf(0) }
+    val episodeFocus = remember { FocusRequester() }
+    val listState = rememberLazyListState()
 
     val episodes = detail?.episodes.orEmpty()
+
+    // 历史落点：历史里看过的那一集，-1 表示这部剧没记录。
+    // 优先按 vid 匹配——集数表重排/换档后 episodeIndex 可能漂移，
+    // vid 才是「那一集」的稳定身份，下标只在 vid 找不到时兜底。
+    // cid 必须对得上：切剧瞬间 StateFlow 还留着上一部剧的值，不丢掉它会拿 A 的集号去选 B。
+    val watched = resume?.takeIf { it.loaded && it.cid == detail?.cid }
+    val resumeIndex = watched?.let { r ->
+        episodes.indexOfFirst { r.vid.isNotBlank() && it.vid == r.vid }
+            .takeIf { it >= 0 }
+            ?: r.episodeIndex.takeIf { it in episodes.indices }
+    } ?: -1
+
+    // 初值直接取历史落点：历史读的是本地盘、详情走的是网络，通常历史先到，
+    // 这里就能一次落位，不必先画一帧「第 1 集选中」再跳过去。
+    // 没赶上（历史比详情慢）时由下面的 LaunchedEffect 补位。
+    val startIndex = resumeIndex.coerceAtLeast(0)
+    var focusDone by remember(detail?.cid) { mutableStateOf(false) }
+    var currentIndex by remember(detail?.cid) { mutableStateOf(startIndex) }
+    // focusRequester 挂在哪一格。落定后就不再跟着 currentIndex 走：
+    // 请求过焦点之后再改这一格的 modifier，等于让已聚焦的卡片换一份节点。
+    var focusIndex by remember(detail?.cid) { mutableStateOf(startIndex) }
+
     val current = episodes.getOrNull(currentIndex)
     // 上游（Parser/Repo）已经过滤过，这里再兜一次：灰档位永远不该出现在用户眼前。
     // 空列表交给下面的「接口没有返回清晰度…」文案兜住，不会白屏。
     val tiers = detail?.tiers.orEmpty().filter { it.available && it.fn.isNotBlank() }
 
-    // 同上：等布局落地再抢焦点，否则 requestFocus 会抛且焦点永远不落
-    LaunchedEffect(detail?.episodes?.size) {
-        if (!episodes.isEmpty() && !focusDone) {
-            focusDone = true
-            withFrameNanos { }
-            withFrameNanos { }
-            runCatching { playFocus.requestFocus() }
+    // 首焦点：历史里看过就落在那一集，没有就读第 1 集。
+    //
+    // 历史还在路上时先等几帧再抢——历史通常几毫秒就到，但抢早了就没法回头：
+    // 焦点一旦钉在第 1 集，历史到货后选中态（currentIndex）和光标就分成了两处。
+    // 也不能无限等：焦点悬空在电视上比落错一集更难用，等不到就按「没历史」处理。
+    //
+    // 等布局落地再 requestFocus，否则目标格还没 compose 出来会抛且焦点永远不落。
+    LaunchedEffect(detail?.cid, episodes.size, resume?.loaded, resumeIndex) {
+        if (episodes.isEmpty() || focusDone) return@LaunchedEffect
+        if (resume?.loaded != true) {
+            repeat(RESUME_WAIT_FRAMES) { withFrameNanos { } }
         }
+        focusDone = true
+        val target = resumeIndex.coerceIn(0, episodes.lastIndex)
+        currentIndex = target
+        focusIndex = target
+        // 目标格往往在可视区之外（第 40 集），LazyRow 还没 compose 它。
+        // 必须先滚进视野，requestFocus 才有节点可挂。
+        runCatching { listState.scrollToItem(target) }
+        withFrameNanos { }
+        withFrameNanos { }
+        runCatching { episodeFocus.requestFocus() }
     }
 
     Box(Modifier.fillMaxSize().background(ModaColors.Bg)) {
@@ -177,6 +222,7 @@ fun DetailScreen(
                     // contentPadding 必须大于「聚焦放大溢出量」：LazyRow 会裁剪边界外的绘制，
                     // 卡最宽 190dp × 1.08 放大 = 每侧溢出约 7.6dp，再加 3dp 描边，留 20dp 才不会被切
                     LazyRow(
+                        state = listState,
                         horizontalArrangement = Arrangement.spacedBy(14.dp),
                         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
                         modifier = Modifier.fillMaxWidth(),
@@ -189,12 +235,18 @@ fun DetailScreen(
                                 isVip = ep.isVip,
                                 isTrailer = isTrailer(ep),
                                 selected = index == currentIndex,
-                                // 播放按钮已移除，首焦点落到第一集，进页即可确认播放
                                 cover = ep.cover,
                                 // 空串时 EpisodeChip 不画第二行：没有描述就不占位置
                                 summary = ep.summary,
-                                modifier = if (index == 0) Modifier.focusRequester(playFocus) else Modifier,
+                                // 首焦点钉在历史落点那一集（没历史就是第 1 集），进页即可确认播放
+                                modifier = if (index == focusIndex) {
+                                    Modifier.focusRequester(episodeFocus)
+                                } else {
+                                    Modifier
+                                },
                                 onClick = {
+                                    // 用户已经自己选了：钉住落点判定，别让迟到的历史把选择顶掉
+                                    focusDone = true
                                     currentIndex = index
                                     onPlay(ep)
                                 },
