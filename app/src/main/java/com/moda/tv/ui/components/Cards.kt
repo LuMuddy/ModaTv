@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -526,25 +527,39 @@ fun HeroCarousel(
     val current = items[index.coerceIn(0, items.lastIndex)]
     val multiple = items.size > 1
 
-    // 自动轮播：key 里带上 index 与 userTick，任何一次手动切换都会让本效果重启，
-    // 于是「刚手动翻过就又被自动切走」不会发生——手动操作等于重新计时 8 秒。
-    LaunchedEffect(multiple, thumbsFocused, index, userTick) {
-        if (!multiple || thumbsFocused) return@LaunchedEffect
-        delay(intervalMs)
-        val next = (index + 1) % items.size
-        index = next
-        // 自动翻页时把焦点一起挪过去：
-        // 只改 index 只会换大图，缩略图上的白框仍停在旧位置，看起来像「选中项跑偏了」。
-        //
-        // 顺序很关键：必须先把列表滚到目标项、等它被组合出来，再 requestFocus。
-        // 反过来的话目标项可能根本还没上树，requestFocus 抛异常被 runCatching 吞掉，
-        // 结果就是「大图换了、焦点框消失了」。
-        runCatching { thumbListState.animateScrollToItem(next) }
-        // 等一帧让新组合出来的卡片完成布局
-        withFrameNanos { }
-        val req = thumbRequesters.getOrNull(next)
-        val ok = runCatching { req?.requestFocus() }.isSuccess
-        android.util.Log.i("HeroAuto", "自动轮播 next=$next req=${req != null} requestOK=$ok")
+    // 自动轮播。
+    //
+    // key 里**不能**放 index：本效果自己就会改 index，把它列进 key 等于每次翻页都
+    // 把自己取消重建。而真正的翻页动作（animateScrollToItem / withFrameNanos）全挂在
+    // delay 之后，重组一发生，协程就在下一个挂起点被取消——滚动与 requestFocus 永远执行不到，
+    // 表现就是「大图换了，下方缩略图的白框还停在原地」。这就是之前的问题。
+    // 现在 index 不进 key，计时循环自己往下走；只有手动操作（userTick）才重启、重置 8 秒。
+    LaunchedEffect(multiple, userTick, items.size) {
+        if (!multiple) return@LaunchedEffect
+        while (true) {
+            delay(intervalMs)
+            // 焦点是否需要跟着走，必须在动任何状态**之前**取样：
+            // 改 index 会触发重组，滚动又会销毁被回收的旧项（连同焦点），
+            // 之后再读 thumbsFocused 就已经读不到「用户原本停在缩略图行」这个事实了。
+            val followFocus = thumbsFocused
+            val next = (index + 1) % items.size
+            index = next
+            // 顺序很关键：先把列表滚到目标项、等它被组合出来，再 requestFocus。
+            // 否则目标项根本还没上树，requestFocus 抛异常被 runCatching 吞掉。
+            runCatching { thumbListState.animateScrollToItem(next) }
+            if (!followFocus) continue
+            // 重试若干帧再放弃：滚动那一瞬间目标项可能还没完成布局，
+            // 单次失败后焦点会掉回工具栏（几何位置最靠前的可聚焦元素）。
+            val req = thumbRequesters.getOrNull(next)
+            if (req != null) {
+                // repeat {} 里的 return@repeat 只是"跳过本次"，不会退出循环，
+                // 所以这里用 for + break 才能在抢到焦点后真正停下来。
+                for (attempt in 0 until 10) {
+                    withFrameNanos { }
+                    if (runCatching { req.requestFocus() }.isSuccess) break
+                }
+            }
+        }
     }
 
     // 缩略图叠在大图右下角：横向排在图片内部，所以外层用 Box 而不是 Column。
@@ -589,8 +604,9 @@ fun HeroCarousel(
                     // 整行被向左顶出 18dp——首张卡的白描边正好被裁掉，
                     // 同时右端又露出半张卡。两个症状同一个算式错误。
                     .width(
-                        HERO_THUMB_VISIBLE * HERO_THUMB_WIDTH +
-                            (HERO_THUMB_VISIBLE - 1) * HERO_THUMB_GAP +
+                        // Dp 只定义了 Dp * Int：乘数写在前面的 Int 无法推导，必须把 Dp 放左边
+                        HERO_THUMB_WIDTH * HERO_THUMB_VISIBLE +
+                            HERO_THUMB_GAP * (HERO_THUMB_VISIBLE - 1) +
                             HERO_THUMB_STRIP_PAD * 2,
                     )
                     // 底部压一层右深左浅的渐变：缩略图压在海报上时边界更清楚
@@ -609,9 +625,9 @@ fun HeroCarousel(
             LazyRow(
                 state = thumbListState,
                 horizontalArrangement = Arrangement.spacedBy(HERO_THUMB_GAP),
-                // 不要再套 wrapContentSize：它会在内容比容器宽时把整行按末端对齐，
-                // 于是首项被顶出左边界。宽度已经由外层算准，这里只要高度。
+                // LazyRow 在 Box 里默认会被撑满，这里必须显式 wrapContent，否则缩略图不可见
                 modifier = Modifier
+                    .wrapContentSize(Alignment.BottomEnd)
                     // 高度要留出放大与描边的余量：+18dp（10dp 内容余量 + 8dp 描边溢出）
                     .height(HERO_THUMB_HEIGHT + 18.dp)
                     .onFocusChanged { thumbsFocused = it.hasFocus },
@@ -696,8 +712,11 @@ fun EpisodeChip(
     // 缩略图在播放页的选集浮层里已经有了，详情页重复一遍没有额外信息。
     Card(
         onClick = onClick,
-        // 190dp：150dp 装不下「第 1 集」之外的第二行描述（只剩约 8 个字，必然截断）
-        modifier = modifier.width(190.dp),
+        // 没有描述时卡片里只有「第 N 集」，给足 190dp 会空出一大块，这里让它贴合文字；
+        // 有描述时文字需要 190dp 才放得下两行不截断，与改动前一致。
+        modifier = modifier.then(
+            if (summary.isNotBlank()) Modifier.width(190.dp) else Modifier,
+        ),
         shape = CardDefaults.shape(shape = RoundedCornerShape(corner)),
         colors = CardDefaults.colors(
             containerColor = if (selected) AccentDeep else ModaColors.SurfaceHigh,
@@ -713,27 +732,23 @@ fun EpisodeChip(
             focusedBorder = focusBorder(3.dp, corner),
         ),
     ) {
-        Column {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp)) {
-                Text(
-                    text = "第 ${index + 1} 集",
-                    style = TvBody.copy(fontSize = 17.sp),
-                    // 未选中聚焦是白底：必须跟内容色，否则烤死的 #F2F3F7 变隐形（1.11:1）
-                    color = contentColor(),
-                    maxLines = 1,
-                )
-                if (isVip) {
-                    Spacer(Modifier.width(6.dp))
-                    Badge("VIP", color = Color(0xFFE0A32E))
-                }
-                if (isTrailer) {
-                    Spacer(Modifier.width(6.dp))
-                    Badge("预告", color = Color(0xFF5C6BC0))
-                }
+        if (summary.isBlank()) {
+            // 只有集号：卡片收到刚好容下文字，集号在框内居中，不再是一条空荡荡的长条
+            Box(
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                EpisodeIndexRow(index = index, isVip = isVip, isTrailer = isTrailer)
             }
-            // 分集描述只在真的有内容时出现：综艺的 fields.title 是当期看点，
-            // 电视剧只有「剧名_01」，剥完为空，此时整行不画、也不留空白占高度。
-            if (summary.isNotBlank()) {
+        } else {
+            // 有分集描述：第一行集号，第二行描述（最多两行），宽度固定 190dp
+            Column {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 8.dp),
+                ) {
+                    EpisodeIndexRow(index = index, isVip = isVip, isTrailer = isTrailer)
+                }
                 Text(
                     text = summary,
                     style = TvCaption.copy(fontSize = 15.sp),
@@ -742,9 +757,29 @@ fun EpisodeChip(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
                 )
-            } else {
-                Spacer(Modifier.height(10.dp))
             }
+        }
+    }
+}
+
+/** 集号 + VIP/预告角标；两种卡片形态共用，避免同一段排版写两遍 */
+@Composable
+private fun EpisodeIndexRow(index: Int, isVip: Boolean, isTrailer: Boolean) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = "第 ${index + 1} 集",
+            style = TvBody.copy(fontSize = 17.sp),
+            // 未选中聚焦是白底：必须跟内容色，否则烤死的 #F2F3F7 变隐形（1.11:1）
+            color = contentColor(),
+            maxLines = 1,
+        )
+        if (isVip) {
+            Spacer(Modifier.width(6.dp))
+            Badge("VIP", color = Color(0xFFE0A32E))
+        }
+        if (isTrailer) {
+            Spacer(Modifier.width(6.dp))
+            Badge("预告", color = Color(0xFF5C6BC0))
         }
     }
 }

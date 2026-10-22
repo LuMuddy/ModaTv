@@ -175,7 +175,7 @@ fun DetailScreen(
                     Text("该剧没有返回任何集数", style = TvBody, color = ModaColors.Danger)
                 } else {
                     // contentPadding 必须大于「聚焦放大溢出量」：LazyRow 会裁剪边界外的绘制，
-                    // 卡宽 180dp × 1.08 放大 = 每侧溢出约 7dp，再加 3dp 描边，留 20dp 才不会被切
+                    // 卡最宽 190dp × 1.08 放大 = 每侧溢出约 7.6dp，再加 3dp 描边，留 20dp 才不会被切
                     LazyRow(
                         horizontalArrangement = Arrangement.spacedBy(14.dp),
                         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
