@@ -177,3 +177,14 @@ ViewModel 内落成状态，屏幕层拿不到 throw，因此不会白屏或崩�
 - 依赖第三方后端与 v.qq.com 的页面结构，腾讯侧改版会导致轮播或频道行降级到搜索方案。
 - 设备 token 有有效期，过期后所有业务接口都会返回 `ok=false`。
 - 未配置单元测试与持续集成，验证方式为真机/模拟器手动走查。
+
+## 贡献
+
+提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。提交信息遵循 Conventional Commits：
+`<type>(<scope>): <中文描述>`，例如 `fix(player): 修复倍速切换后画面卡顿`。
+
+首次克隆后启用提交信息钩子（只需一次）：
+
+```bash
+git config core.hooksPath .githooks
+```
