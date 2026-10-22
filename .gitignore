@@ -1,0 +1,30 @@
+# Built artifacts
+build/
+/app/build/
+
+# Gradle
+.gradle/
+.gradle
+
+# Kotlin compiler session dir
+.kotlin/
+
+# Local configuration (machine specific)
+local.properties
+
+# IDE
+.idea/
+*.iml
+*.hprof
+
+# Native
+.externalNativeBuild/
+.cxx/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Signing
+*.jks
+*.keystore

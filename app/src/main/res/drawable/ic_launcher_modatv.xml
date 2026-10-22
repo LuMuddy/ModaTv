@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ModaTv 应用图标。
+  设计：品牌蓝径向渐变底 + 白色 M 字形。M 的两条竖笔与中央 V 构成整体，
+  在 320dp 缩放的电视桌面上仍能清晰辨认（细节少、对比高）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="192"
+    android:viewportHeight="192">
+
+    <path
+        android:pathData="M0,44 A44,44 0 0 1 44,0 L148,0 A44,44 0 0 1 192,44 L192,148 A44,44 0 0 1 148,192 L44,192 A44,44 0 0 1 0,148 Z">
+        <aapt:attr xmlns:aapt="http://schemas.android.com/aapt" name="android:fillColor">
+            <gradient
+                android:startX="0"
+                android:startY="0"
+                android:endX="67"
+                android:endY="192"
+                android:type="linear">
+                <item android:offset="0" android:color="#FF3D82F6" />
+                <item android:offset="1" android:color="#FF1B3FA0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- 左竖笔 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M44,54 h20 v86 h-20 z" />
+    <!-- 右竖笔 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M128,54 h20 v86 h-20 z" />
+    <!-- 中央 V -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M64,54 L83,54 L96,104 L109,54 L128,54 L96,140 Z" />
+</vector>
