@@ -178,7 +178,6 @@ private fun HistoryRoute(vm: TvViewModel) {
         onResume = vm::resumeFromHistory,
         onDelete = vm::removeHistory,
         onClear = vm::clearHistory,
-        onBack = { vm.pop() },
     )
 }
 
@@ -195,7 +194,6 @@ private fun FavoritesRoute(vm: TvViewModel) {
         onOpen = { entry -> vm.push(Dest.Detail(entry.cid, entry.title)) },
         onDelete = vm::removeFavorite,
         onClear = vm::clearFavorites,
-        onBack = { vm.pop() },
     )
 }
 
@@ -243,6 +241,8 @@ private fun SearchRoute(vm: TvViewModel) {
 private fun DetailRoute(vm: TvViewModel, dest: Dest.Detail) {
     // detailCid 已在 push 时切到 dest.cid，所以从收藏页点进来的第一帧拿到的就是这部剧的收藏态
     val isFavorite by vm.detailIsFavorite.collectAsStateWithLifecycle()
+    // 历史落点：看过这剧就把光标和选中都放到看过的那一集
+    val resume by vm.detailResume.collectAsStateWithLifecycle()
     DetailScreen(
         detail = vm.detail,
         loading = vm.detailLoading,
@@ -265,6 +265,7 @@ private fun DetailRoute(vm: TvViewModel, dest: Dest.Detail) {
         description = vm.detail?.description.orEmpty(),
         onRetry = vm::retryDetail,
         isFavorite = isFavorite,
+        resume = resume,
         onToggleFavorite = {
             val series = vm.detail ?: return@DetailScreen
             vm.toggleFavorite(
