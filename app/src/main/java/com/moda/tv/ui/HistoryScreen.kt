@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -52,6 +53,10 @@ import com.moda.tv.ui.theme.TvHeading
  * 观看历史独立页：网格海报 + 进度条，点卡片一步续播（不进详情）。
  * 删除按钮放在卡片下方而不是叠在卡片内部：TV 的方向键按几何位置找下一个焦点，
  * 卡片内部套可聚焦按钮时，从卡片按方向键会直接跳到相邻卡片，删除按钮就永远够不着。
+ * 位置靠卡片右边缘：右侧是"这一列之外没有东西"的安全边，
+ * 从海报按「下」正好落到删除上，和海报左对齐的初始位置对不上眼。
+ * 顶部不放「返回」按钮——遥控器返回键由 AppRoot 的 BackHandler 全局接管，
+ * 这一页再多一个返回只是重复入口，还占掉工具栏的视觉重量。
  */
 @Composable
 fun HistoryScreen(
@@ -59,19 +64,14 @@ fun HistoryScreen(
     onResume: (LibraryEntry) -> Unit,
     onDelete: (String) -> Unit,
     onClear: () -> Unit,
-    onBack: () -> Unit,
 ) {
     val firstCardFocus = remember { FocusRequester() }
-    val backFocus = remember { FocusRequester() }
     var firstFocusDone by remember { mutableStateOf(false) }
 
-    // 首帧布局完成前 requestFocus 会直接抛，等两帧再抢焦点；空态时焦点落到"返回"上
+    // 首帧布局完成前 requestFocus 会直接抛，等两帧再抢焦点。
+    // 空态没有可聚焦元素是不成问题的：返回键由 AppRoot 全局接，不依赖焦点落在哪个控件上。
     LaunchedEffect(entries.isNotEmpty()) {
-        if (entries.isEmpty()) {
-            withFrameNanos { }
-            withFrameNanos { }
-            runCatching { backFocus.requestFocus() }
-        } else if (!firstFocusDone) {
+        if (entries.isNotEmpty() && !firstFocusDone) {
             firstFocusDone = true
             withFrameNanos { }
             withFrameNanos { }
@@ -85,16 +85,15 @@ fun HistoryScreen(
             .background(ModaColors.Bg)
             .padding(start = 48.dp, end = 48.dp, top = 32.dp, bottom = 24.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        // 标题靠左、「清空全部」靠右：工具栏两端各挂一件东西，
+        // 中间留空才看得出这是两个不相干的操作；挤在标题后面会被读成标题的一部分
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
             Text("历史记录 ${entries.size} 条", style = TvHeading, color = ModaColors.Text)
-            Spacer(Modifier.width(28.dp))
             ActionButton(text = "清空全部", onClick = onClear, enabled = entries.isNotEmpty())
-            Spacer(Modifier.width(14.dp))
-            ActionButton(
-                text = "返回",
-                onClick = onBack,
-                modifier = Modifier.focusRequester(backFocus),
-            )
         }
 
         Spacer(Modifier.height(24.dp))
@@ -140,7 +139,11 @@ private fun EmptyHistory() {
     }
 }
 
-/** 单条记录：海报（底部叠进度条）+ 剧名 + 第 N 集 + 独立可聚焦的删除按钮 */
+/**
+ * 单条记录：海报（底部叠进度条）+ 左栏文字（剧名 / 第 N 集 / 已看时间）+ 右侧删除。
+ * 删除与剧名同一行而不是独占一行：它和文字共用一条基线，卡片底部才收得干净；
+ * 之前吊在文字块下方右侧、还带一块灰底，四个并排就成了打断海报节奏的悬浮方块。
+ */
 @Composable
 private fun HistoryCard(
     entry: LibraryEntry,
@@ -193,34 +196,42 @@ private fun HistoryCard(
         }
 
         Spacer(Modifier.height(8.dp))
-        Text(
-            text = entry.title,
-            style = TvBody.copy(fontSize = 18.sp),
-            color = ModaColors.Text,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Spacer(Modifier.height(2.dp))
-        Text(
-            text = episodeLabel(entry.episodeIndex),
-            style = TvCaption.copy(fontSize = 14.sp),
-            color = ModaColors.TextDim,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        // 「32:15 / 47:38 已看」：时间点对时间点，比百分比精确，也和播放器 OSD 的时钟一致
-        if (entry.durationMs > 0L) {
-            Spacer(Modifier.height(2.dp))
-            Text(
-                text = watchedLabel(entry.positionMs, entry.durationMs) + " 已看",
-                style = TvCaption.copy(fontSize = 14.sp),
-                color = ModaColors.AccentSoft,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // 文字吃满剩余宽度：剧名再长也只挤自己，删除按钮始终钉在列右边缘
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = entry.title,
+                    style = TvBody.copy(fontSize = 18.sp),
+                    color = ModaColors.Text,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = episodeLabel(entry.episodeIndex),
+                    style = TvCaption.copy(fontSize = 14.sp),
+                    color = ModaColors.TextDim,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                // 「32:15 / 47:38 已看」：时间点对时间点，比百分比精确，也和播放器 OSD 的时钟一致
+                if (entry.durationMs > 0L) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = watchedLabel(entry.positionMs, entry.durationMs) + " 已看",
+                        style = TvCaption.copy(fontSize = 14.sp),
+                        color = ModaColors.AccentSoft,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Spacer(Modifier.width(12.dp))
+            DeleteButton(onDelete)
         }
-        Spacer(Modifier.height(8.dp))
-        DeleteButton(onDelete)
     }
 }
 
@@ -270,21 +281,22 @@ private fun episodeLabel(episodeIndex: Int): String =
     if (episodeIndex < 0) "集号未知" else "第 ${episodeIndex + 1} 集"
 
 @Composable
-private fun DeleteButton(onDelete: () -> Unit) {
+private fun DeleteButton(onDelete: () -> Unit, modifier: Modifier = Modifier) {
     val corner = 8.dp
     Card(
         onClick = onDelete,
+        modifier = modifier,
         shape = CardDefaults.shape(shape = RoundedCornerShape(corner)),
-        // 红底吸睛但廉价，而且和整页深色风格冲突。
-        // 改成「常态低调、聚焦反白」——与首页、设置页的可聚焦元素保持同一套语言：
-        // 焦点用白底 + 深字表达，删除动作靠文案本身传达，不需要靠颜色喊。
+        // 常态完全透明、只有浅灰字：遥控器指到哪才亮到哪，平时这块退进背景，
+        // 不跟海报抢视线。焦点沿用全站同一套语言（白底 + 深字），
+        // 删除的语义交给文案本身，不靠红色喊。
         colors = CardDefaults.colors(
-            containerColor = ModaColors.Surface,
-            contentColor = ModaColors.Danger,
+            containerColor = Color.Transparent,
+            contentColor = ModaColors.TextDim,
             focusedContainerColor = ModaColors.Focus,
             focusedContentColor = ModaColors.Bg,
             pressedContainerColor = ModaColors.SurfaceHigh,
-            pressedContentColor = ModaColors.Danger,
+            pressedContentColor = ModaColors.TextDim,
         ),
         scale = CardDefaults.scale(scale = 1f, focusedScale = 1.06f, pressedScale = 1f),
         border = CardDefaults.border(
@@ -295,15 +307,17 @@ private fun DeleteButton(onDelete: () -> Unit) {
             ),
         ),
     ) {
+        // 宽度跟着文字走（不再固定 92dp 的方块），但保留 56x40dp 的点击/焦点面积：
+        // 遥控器要在 3 米外把焦点停在这上面，太小会一直滑过去
         Box(
-            Modifier.width(92.dp).padding(vertical = 7.dp),
+            Modifier.defaultMinSize(minWidth = 56.dp, minHeight = 40.dp).padding(horizontal = 12.dp),
             contentAlignment = Alignment.Center,
         ) {
-            // 必须显式跟随内容色：TvCaption 把颜色烤死在 style.color 上（#9AA0AE），
-            // 聚焦时底色变红、字还是浅灰，几乎看不见——这就是「删除按钮很丑」的直接原因
+            // 必须显式跟随内容色：TvBody 把颜色烤死在 style.color 上，
+            // 不传 color 的话聚焦白底上仍是浅色字，等于看不见
             Text(
                 "删除",
-                style = TvBody.copy(fontSize = 16.sp),
+                style = TvBody.copy(fontSize = 14.sp),
                 color = androidx.tv.material3.LocalContentColor.current,
             )
         }

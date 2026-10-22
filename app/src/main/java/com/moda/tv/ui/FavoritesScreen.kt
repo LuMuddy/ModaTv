@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -54,6 +55,10 @@ import com.moda.tv.ui.theme.TvHeading
  * 与历史页的唯一差别是卡片上不画进度条、不显示集号：
  * 收藏条目写入时 episodeIndex/positionMs/durationMs 恒为 0（收藏是"追这部剧"，
  * 不是"看到第几分钟"），画出来会是一条永远为空的进度条和一个假的「第 1 集」。
+ *
+ * 删除按钮同样靠卡片右边缘、顶部同样不放「返回」按钮——两页并排看必须一模一样，
+ * 差异只允许出现在内容上（有进度条 vs 没有），不允许出现在布局上。
+ * 退出靠遥控器返回键：AppRoot 的 BackHandler 在栈深 > 1 时统一 pop。
  */
 @Composable
 fun FavoritesScreen(
@@ -61,19 +66,14 @@ fun FavoritesScreen(
     onOpen: (LibraryEntry) -> Unit,
     onDelete: (String) -> Unit,
     onClear: () -> Unit,
-    onBack: () -> Unit,
 ) {
     val firstCardFocus = remember { FocusRequester() }
-    val backFocus = remember { FocusRequester() }
     var firstFocusDone by remember { mutableStateOf(false) }
 
-    // 首帧布局完成前 requestFocus 会直接抛，等两帧再抢焦点；空态时焦点落到"返回"上
+    // 首帧布局完成前 requestFocus 会直接抛，等两帧再抢焦点。
+    // 空态没有可聚焦元素是不成问题的：返回键由 AppRoot 全局接，不依赖焦点落在哪个控件上。
     LaunchedEffect(entries.isNotEmpty()) {
-        if (entries.isEmpty()) {
-            withFrameNanos { }
-            withFrameNanos { }
-            runCatching { backFocus.requestFocus() }
-        } else if (!firstFocusDone) {
+        if (entries.isNotEmpty() && !firstFocusDone) {
             firstFocusDone = true
             withFrameNanos { }
             withFrameNanos { }
@@ -87,16 +87,14 @@ fun FavoritesScreen(
             .background(ModaColors.Bg)
             .padding(start = 48.dp, end = 48.dp, top = 32.dp, bottom = 24.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        // 与历史页同一条规则：标题靠左、「清空全部」靠右
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
             Text("我的收藏 ${entries.size} 部", style = TvHeading, color = ModaColors.Text)
-            Spacer(Modifier.width(28.dp))
             ActionButton(text = "清空全部", onClick = onClear, enabled = entries.isNotEmpty())
-            Spacer(Modifier.width(14.dp))
-            ActionButton(
-                text = "返回",
-                onClick = onBack,
-                modifier = Modifier.focusRequester(backFocus),
-            )
         }
 
         Spacer(Modifier.height(24.dp))
@@ -149,7 +147,11 @@ private fun EmptyFavorites() {
     }
 }
 
-/** 单条收藏：海报 + 剧名 + 独立可聚焦的删除按钮（按钮放卡片外，理由同 HistoryCard） */
+/**
+ * 单条收藏：海报 + 左剧名 / 右删除。
+ * 布局与 HistoryCard 逐像素对齐——两页并排看只允许内容不同（有没有进度条），
+ * 不允许删除按钮跑到别的位置上。
+ */
 @Composable
 private fun FavoriteCard(
     entry: LibraryEntry,
@@ -194,31 +196,40 @@ private fun FavoriteCard(
         }
 
         Spacer(Modifier.height(8.dp))
-        Text(
-            text = entry.title.ifBlank { "未命名剧集" },
-            style = TvBody.copy(fontSize = 18.sp),
-            color = ModaColors.Text,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Spacer(Modifier.height(8.dp))
-        FavoriteDeleteButton(onDelete)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = entry.title.ifBlank { "未命名剧集" },
+                modifier = Modifier.weight(1f),
+                style = TvBody.copy(fontSize = 18.sp),
+                color = ModaColors.Text,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.width(12.dp))
+            FavoriteDeleteButton(onDelete)
+        }
     }
 }
 
 @Composable
-private fun FavoriteDeleteButton(onDelete: () -> Unit) {
+private fun FavoriteDeleteButton(onDelete: () -> Unit, modifier: Modifier = Modifier) {
     val corner = 8.dp
     Card(
         onClick = onDelete,
+        modifier = modifier,
         shape = CardDefaults.shape(shape = RoundedCornerShape(corner)),
+        // 与历史页同一套：常态透明、只有浅灰字，聚焦才白底反白。
+        // 之前常态是浅灰底 + 灰字、聚焦又变红底，与全站「焦点=白底深字」的语言不一致
         colors = CardDefaults.colors(
-            containerColor = ModaColors.SurfaceHigh,
+            containerColor = Color.Transparent,
             contentColor = ModaColors.TextDim,
-            focusedContainerColor = ModaColors.Danger,
-            focusedContentColor = Color.White,
-            pressedContainerColor = ModaColors.Danger,
-            pressedContentColor = Color.White,
+            focusedContainerColor = ModaColors.Focus,
+            focusedContentColor = ModaColors.Bg,
+            pressedContainerColor = ModaColors.SurfaceHigh,
+            pressedContentColor = ModaColors.TextDim,
         ),
         scale = CardDefaults.scale(scale = 1f, focusedScale = 1.06f, pressedScale = 1f),
         border = CardDefaults.border(
@@ -229,11 +240,17 @@ private fun FavoriteDeleteButton(onDelete: () -> Unit) {
             ),
         ),
     ) {
+        // 宽度跟着文字走，但保留 56x40dp 的遥控器可停靠面积
         Box(
-            Modifier.width(92.dp).padding(vertical = 7.dp),
+            Modifier.defaultMinSize(minWidth = 56.dp, minHeight = 40.dp).padding(horizontal = 12.dp),
             contentAlignment = Alignment.Center,
         ) {
-            Text("删除", style = TvCaption.copy(fontSize = 15.sp))
+            // 显式跟随内容色：TvBody 把颜色烤死在 style.color 上，不传 color 聚焦后看不见
+            Text(
+                "删除",
+                style = TvBody.copy(fontSize = 14.sp),
+                color = androidx.tv.material3.LocalContentColor.current,
+            )
         }
     }
 }
