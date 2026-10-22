@@ -104,6 +104,8 @@ fun HomeScreen(
     // 用法见下方 Box 上的 focusProperties { enter = … }——不这样指定的话，
     // Compose 会按「几何位置最靠前」挑第一个可聚焦元素，正好是工具栏的搜索图标。
     val contentFocus = remember { FocusRequester() }
+    // 第一行首卡：轮播最后一张按右键落在这里（见 HeroCarousel 的 rightEdgeFocus）
+    val firstRowFocus = remember { FocusRequester() }
     var loadMoreFired by remember(rows.size) { mutableStateOf(false) }
 
     val firstItem = rows.firstOrNull()?.items?.firstOrNull()
@@ -131,13 +133,18 @@ fun HomeScreen(
     // 那一瞬间缩略图行还不存在，requestFocus 必然失败，焦点就留在了工具栏。
     LaunchedEffect(heroItems.size) {
         if (heroItems.isEmpty() || firstFocusDone) return@LaunchedEffect
-        // 数据已就绪：给布局最多 60 帧（约 1 秒）完成排布，抢到即止
-        repeat(60) {
+        // 数据已就绪：给布局最多 300 帧（约 5 秒）完成排布，抢到即止。
+        //
+        // 为什么不是判 requestFocus() 的返回值：当 FocusRequester 还没有挂到任何
+        // 可聚焦节点上（缩略图行尚未组合出来）时，它会打印一条
+        // 「FocusRequester is not initialized」后**正常返回**，不抛异常。
+        // 之前用 runCatching{}.isSuccess 判断，于是第一次调用就被当成成功，
+        // firstFocusDone 直接置位，焦点实际还留在工具栏的搜索图标上。
+        // 现在改成让轮播自己在获得焦点时置位，请求只是「尽力而为」。
+        repeat(300) {
             withFrameNanos { }
-            if (runCatching { heroFocus.requestFocus() }.isSuccess) {
-                firstFocusDone = true
-                return@LaunchedEffect
-            }
+            if (firstFocusDone) return@LaunchedEffect
+            heroFocus.requestFocus()
         }
     }
 
@@ -231,6 +238,12 @@ fun HomeScreen(
                                 // 首焦点交给缩略图行：左右键立刻可用且能驱动大图，
                                 // 比停在只是一块 onClick 的大图区更顺手
                                 thumbFocusRequester = heroFocus,
+                                // 轮播真的拿到焦点后才置位：requestFocus() 在节点未上树时
+                                // 只打日志、照样返回，靠它判断会误报成功。
+                                onFocused = { firstFocusDone = true },
+                                // 最后一张缩略图按右键 → 往下进「电视剧」首卡，
+                                // 而不是跳到右上角工具栏（几何上那里离得更近）。
+                                rightEdgeFocus = firstRowFocus,
                                 // 不写死高度：HeroCarousel 自己按「主视觉 + 缩略图行」算高度
                                 // （约 270dp），外面再套一层固定高度会在缩略图行上留出空白或裁掉它。
                                 // 整体仍落在 260~300dp 的预算内，见 Cards.kt 的说明。
@@ -256,6 +269,9 @@ fun HomeScreen(
                         onCursorChange = { rowCursor[rowIndex] = it },
                         onOpenDetail = onOpenDetail,
                         prefetchCids = prefetchCids,
+                        // 只有紧贴轮播的第一行需要这条上行边：更下面几行的上方就是另一行
+                        upFocus = if (rowIndex == 0) heroFocus else null,
+                        firstCardFocus = if (rowIndex == 0) firstRowFocus else null,
                         onReachTail = {
                             if (isLastRow && !loadMoreFired) {
                                 loadMoreFired = true
@@ -296,6 +312,10 @@ private fun HomeRowLane(
     onOpenDetail: (String, String) -> Unit,
     prefetchCids: Set<String>,
     onReachTail: () -> Unit,
+    /** 第一行专用：按上键回到轮播缩略图。其余行为空，交给 Compose 的几何搜索 */
+    upFocus: FocusRequester? = null,
+    /** 第一行专用：首卡挂上这个 requester，作为轮播最后一张按右键的落点 */
+    firstCardFocus: FocusRequester? = null,
 ) {
     val rowState = rememberLazyListState(initialFirstVisibleItemIndex = initialCursor)
 
@@ -324,13 +344,36 @@ private fun HomeRowLane(
                     width = HOME_CARD_WIDTH,
                     // 只有首屏少数卡预取高清；其余小卡保持 /260 缩略图，省流量与时间
                     preferHiRes = rowIndex == 0 && prefetchCids.contains(item.cid),
-                    modifier = Modifier.onFocusChanged { state ->
-                        if (state.isFocused) {
-                            onCursorChange(index)
-                            // 最后一行扫到尾部就算「到底」，提前触发下一页
-                            if (index >= row.items.lastIndex - 1) onReachTail()
-                        }
-                    },
+                    modifier = Modifier
+                        // 第一行按上键必须回到轮播缩略图。
+                        // 不显式指定方向时 Compose 按几何位置找最近的可聚焦元素，
+                        // 结果是跳到工具栏的搜索图标——用户想回横幅，光标却飞到了右上角。
+                        // 属性挂在这里而不是 LazyRow 上：LazyRow 本身不是焦点目标，
+                        // 导航属性只有落在真正可聚焦的卡片节点上才生效。
+                        .then(
+                            if (upFocus != null) {
+                                // up 的属性类型就是 FocusRequester（不是 (FocusDirection) -> FocusRequester，
+                                // 那个签名只属于 enter/exit），所以直接赋 requester 本身
+                                Modifier.focusProperties { up = upFocus }
+                            } else {
+                                Modifier
+                            },
+                        )
+                        // 首卡额外挂 requester：轮播最后一张按右键要精确落到这里
+                        .then(
+                            if (index == 0 && firstCardFocus != null) {
+                                Modifier.focusRequester(firstCardFocus)
+                            } else {
+                                Modifier
+                            },
+                        )
+                        .onFocusChanged { state ->
+                            if (state.isFocused) {
+                                onCursorChange(index)
+                                // 最后一行扫到尾部就算「到底」，提前触发下一页
+                                if (index >= row.items.lastIndex - 1) onReachTail()
+                            }
+                        },
                 )
             }
         }
