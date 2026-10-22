@@ -42,11 +42,40 @@ val OsdBottomInset = 148.dp
  * 倍速与弹幕各自是独立入口，不再共用一个「设置」壳。
  * 片头/片尾是「一键定位」型入口：不展开面板，短按记录或跳转、长按清除记录。
  */
-enum class OsdSlot { Quality, Episode, Speed, Danmaku, Aspect, Intro, Outro }
+enum class OsdSlot {
+    Quality,
+    Episode,
+    Speed,
+    Danmaku,
+    Aspect,
+    Intro,
+    Outro;
+
+    /**
+     * 展开这个槽位时，左右键归谁。
+     *
+     * 业内 TV 播放器按「模态层」分派按键：控制条这一层左右键仍然是快进快退；
+     * 一旦某个浮窗展开，它就成为最上层，左右键交给它自己的导航轴。
+     * 所以这里不是「所有浮窗一律静默」——那会让横向档位条按左右毫无反应，
+     * 用户看到一排按钮却推不动，只能靠上下键反着操作。
+     */
+    val horizontalPanel: Boolean
+        get() = when (this) {
+            // 横向档位条：左右键与画面方向一致，就是换值
+            Speed, Aspect -> true
+            // 横滑选集条：左右键换集号，确认键才真正切集
+            Episode -> true
+            // 纵向列表：导航轴是上下，左右键在这层没有语义
+            Quality, Danmaku -> false
+            // 一键定位型，不展开浮窗
+            Intro, Outro -> false
+        }
+}
 
 /**
  * 上下键的循环顺序就是这个列表的顺序。
  * 播放/暂停归确认键，快进快退归左右键，退出归返回键——它们都不占槽位。
+ * 展开某个槽位的浮窗后，左右键按该浮窗的导航轴分派，见 [OsdSlot.horizontalPanel]。
  */
 val OsdSlots: List<OsdSlot> = listOf(
     OsdSlot.Quality,

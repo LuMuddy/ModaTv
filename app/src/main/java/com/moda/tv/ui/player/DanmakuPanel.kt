@@ -94,8 +94,8 @@ private fun danmakuItemValue(item: DanmakuItem, settings: PlayerSettings): Strin
 }
 
 /**
- * 调值（播放页里由确认键触发——左右键已专供进度条）：
- * 档位类取模循环，边距类按 5% 步进并夹在合法区间内。
+ * 调值：播放页里由确认键触发（纵向表，左右键在这层没有语义）。
+ * 档位类取模循环，边距类按 5% 步进。
  */
 fun adjustDanmaku(settings: PlayerSettings, item: DanmakuItem, delta: Int): PlayerSettings =
     when (item) {

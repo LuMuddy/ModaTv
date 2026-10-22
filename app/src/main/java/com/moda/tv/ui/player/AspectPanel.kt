@@ -23,7 +23,7 @@ import com.moda.tv.ui.theme.ModaColors
 import com.moda.tv.ui.theme.TvBody
 import com.moda.tv.ui.theme.TvCaption
 
-/** 画面比例面板：上下键循环，选中即改 resizeMode，不重建播放器 */
+/** 画面比例面板：左右键循环，选中即改 resizeMode，不重建播放器 */
 @Composable
 fun AspectPanel(mode: AspectMode, focusedIndex: Int) {
     val shape = RoundedCornerShape(14.dp)
@@ -56,6 +56,6 @@ fun AspectPanel(mode: AspectMode, focusedIndex: Int) {
             }
         }
         Spacer(Modifier.height(6.dp))
-        Text("上下键切换，立即生效", style = TvCaption)
+        Text("左右键切换，上下键离开；立即生效", style = TvCaption)
     }
 }
