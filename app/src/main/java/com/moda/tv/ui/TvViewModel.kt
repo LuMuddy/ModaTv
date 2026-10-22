@@ -17,6 +17,8 @@ import com.moda.tv.data.local.FavoritesStore
 import com.moda.tv.data.local.FavoritesStoreImpl
 import com.moda.tv.data.local.HistoryStore
 import com.moda.tv.data.local.HistoryStoreImpl
+import com.moda.tv.data.local.IntroOutroStore
+import com.moda.tv.data.local.IntroOutroStoreImpl
 import com.moda.tv.data.local.SearchHistoryStoreImpl
 import com.moda.tv.model.Danmaku
 import com.moda.tv.model.Episode
@@ -83,6 +85,9 @@ class TvViewModel(private val app: Context) : ViewModel() {
     // ============ 收藏模块（勿删）============
     /** 收藏与历史是两套独立 DataStore（moda_favorites / moda_history），互不读写 */
     private val favorites: FavoritesStore = FavoritesStoreImpl.create(app)
+
+    /** 片头/片尾标记；与历史联动删除，所以 VM 也要持有一个实例 */
+    private val introOutro: IntroOutroStore = IntroOutroStoreImpl.create(app)
 
     /**
      * 历史页的数据源。DataStore 的 IO 异常在 store 内部已兜成空表，
@@ -185,6 +190,8 @@ class TvViewModel(private val app: Context) : ViewModel() {
     private var lastPosMs = 0L
     private var lastDurMs = 0L
     private var lastWriteAt = 0L
+    /** 已经处理过「播放结束」的 vid：片尾标记与 ExoPlayer 结束事件各来一次，必须只认一次 */
+    private var endedVid: String? = null
 
     /** 已取到的封面：cid → uri。写历史时同步读这里，绝不为了封面等网络 */
     private val covers = java.util.concurrent.ConcurrentHashMap<String, String>()
@@ -375,6 +382,15 @@ class TvViewModel(private val app: Context) : ViewModel() {
             } catch (e: Exception) {
                 // 删不掉至多留一条记录，不能让历史页崩掉
             }
+            // 历史没了，这部剧的片头片尾也一起清掉：标记是观看数据的附属品，
+            // 单独留下会变成用户看不见、也删不掉的残留
+            try {
+                introOutro.remove(cid)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // 历史已删成功，联动失败只是留一条标记，不影响页面
+            }
         }
     }
 
@@ -386,6 +402,14 @@ class TvViewModel(private val app: Context) : ViewModel() {
                 throw e
             } catch (e: Exception) {
                 // 同上：清空失败不弹错、不崩溃
+            }
+            // 与单条删除同一套语义：清空历史 → 片头片尾标记一并清空
+            try {
+                introOutro.clear()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // 历史已清空，标记清理失败不阻塞用户
             }
         }
     }
@@ -446,6 +470,8 @@ class TvViewModel(private val app: Context) : ViewModel() {
         lastPosMs = 0L
         lastDurMs = 0L
         lastWriteAt = 0L
+        // 换集/重进都要重新允许「播放结束」处理：旧 vid 的去重位不能带到新的播放会话
+        endedVid = null
         playerJob = viewModelScope.launch {
             try {
                 // a) 集数表：连播、集标签都依赖它，必须先拿到
@@ -612,9 +638,17 @@ class TvViewModel(private val app: Context) : ViewModel() {
         ensureCover(snapshot.cid)
     }
 
-    /** 自动连播；已经是最后一集就退回详情 */
+    /**
+     * 自动连播；已经是最后一集就退回进入播放页之前的那一页。
+     *
+     * 去重是必须的：片尾标记命中会主动调一次 onEnded，ExoPlayer 真播完又会回调一次，
+     * 两次都放行的话同一集会被连跳两集（最后一集则会连 pop 两层）。
+     * 判据用「同一个 vid 只处理一次播放结束」——换集后 vid 变了，闸门自然打开。
+     */
     fun onEnded() {
         val snapshot = player as? PlayerUi.Ready ?: return
+        if (endedVid == snapshot.vid) return
+        endedVid = snapshot.vid
         // 连播会立刻覆写 player 状态，先把这一集的进度落盘
         writeHistory(snapshot)
         val next = episodes.firstOrNull { it.index == snapshot.episodeIndex + 1 }

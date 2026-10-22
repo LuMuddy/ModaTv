@@ -164,8 +164,10 @@ private fun BufferingIndicator(modifier: Modifier = Modifier) {
 private const val SeekStepMs = 10_000L
 private const val TickMs = 300L
 private const val ProgressReportMs = 1000L
-/** 片头/片尾的「长按清除」判定时长：短于它按短按处理 */
+/** 长按多久算「要清除」，短于它按短按处理 */
 private const val MarkLongPressMs = 800L
+/** 判断「已经播过标记点」的容差：刚 seek 到位时位置可能差一点点 */
+private const val MarkReachedToleranceMs = 1000L
 
 /**
  * 复用 Api 的 OkHttpClient 建数据源：电视盒子的默认 HttpURLConnection 在 TLS 与
@@ -258,9 +260,14 @@ fun PlayerScreen(
     }
 
     var marks by remember(cid) { mutableStateOf(IntroOutro()) }
-    // 换集不重建播放页，但 cid 不变，所以按 cid 读一次即可；清除/记录后由本地状态即时反映
+    // 记录是否已经从磁盘读到（读完了才允许自动跳，否则「还没读到」会被当成「没有记录」）
+    var marksReady by remember(cid) { mutableStateOf(false) }
+    // 换集不重建播放页，但 cid 不变，所以按 cid 读一次即可；记录/清除后由本地状态即时反映。
+    // 读盘是异步的，下面的起播循环以 marks 为 key，读到记录后会重开一轮再判断，
+    // 因此不会把「还没读到」误当成「没有记录」
     LaunchedEffect(cid) {
         marks = if (cid.isBlank()) IntroOutro() else introOutroStore.get(cid)
+        marksReady = true
     }
 
     // 写盘统一走这里：UI 立刻生效，持久化异步跟上，不阻塞按键响应
@@ -452,12 +459,47 @@ fun PlayerScreen(
         player.setPlaybackSpeed(settings.speed)
     }
 
-    LaunchedEffect(player) {
+    /**
+     * 自动跳读的是「实时标记」，并且以标记值本身作为 effect 的 key：
+     * 用户刚记录的片头/片尾要立刻生效，否则记录完什么都不发生。
+     * key 变化会重开一轮循环，introApplied/outroFired 随之复位，
+     * 于是「记录完立刻用上」，而普通播放过程中又不会被反复触发。
+     */
+    val liveMarks = if (marksReady) marks else IntroOutro()
+    LaunchedEffect(player, liveMarks.introMs, liveMarks.outroMs) {
         var sinceReport = 0L
+        // 片头只自动跳一次：跳完再判会跟用户的回看拉扯，用户往回拖一点就被拽回去
+        var introApplied = false
+        // 片尾同理，只触发一次，避免 onEnded 之前本帧内反复调用
+        var outroFired = false
         while (true) {
             positionMs = player.currentPosition.coerceAtLeast(0L)
             durationMs = player.duration.coerceAtLeast(0L)
             bufferedMs = player.bufferedPosition.coerceAtLeast(0L)
+
+            // 片头：起播后只要还没走到记录点，就自动跳到记录点。
+            // 断点续播在同一集的中间时，now 已经大于标记，这里自然不触发
+            val intro = liveMarks.introMs
+            if (intro > 0L && !introApplied) {
+                introApplied = true
+                if (positionMs + MarkReachedToleranceMs < intro) {
+                    player.seekTo(intro)
+                    positionMs = intro
+                }
+            }
+
+            // 片尾：播到记录点就算本集看完，交给外部连播下一集。
+            // 不能 return：这个循环同时负责进度上报，退出后整页就再也写不进断点了
+            val outro = liveMarks.outroMs
+            if (outro > 0L && !outroFired &&
+                positionMs >= outro - MarkReachedToleranceMs
+            ) {
+                outroFired = true
+                // 不暂停：暂停会让 currentPosition 钉在片尾点上，新循环重新判断时又命中一次。
+                // 交给外部切集，旧播放器随 key 变化被 release
+                onEnded()
+            }
+
             sinceReport += TickMs
             if (sinceReport >= ProgressReportMs) {
                 sinceReport = 0L
@@ -523,70 +565,42 @@ fun PlayerScreen(
     }
 
     /**
-     * 片头/片尾的短按语义（用户原话）：
-     * 还没记录 → 把当前播放位置记下来；已经记录 → 跳到记录的位置。
+     * 按钮的职责是「记录当前时间」，跳转由播放器自动完成。
+     * 重新按一次就是重新量一遍：把记录改成现在的位置。
      */
-    fun markOrJump(isIntro: Boolean) {
-        val recorded = if (isIntro) marks.introMs else marks.outroMs
-        if (recorded <= 0L) {
-            val now = player.currentPosition.coerceAtLeast(0L)
-            // 0 秒没有意义：既不能当标记跳，写进去也只是个空记录
-            if (now <= 0L) return
-            marks = if (isIntro) marks.copy(introMs = now) else marks.copy(outroMs = now)
-            scope.launch { persistMark(isIntro, now) }
-        } else {
-            val target = if (durationMs > 0L) recorded.coerceAtMost(durationMs) else recorded
-            player.seekTo(target)
-            positionMs = target
-        }
+    fun recordMark(isIntro: Boolean) {
+        val now = player.currentPosition.coerceAtLeast(0L)
+        // 0 秒没有意义：既不能当标记跳，写进去也只是个空记录
+        if (now <= 0L) return
+        marks = if (isIntro) marks.copy(introMs = now) else marks.copy(outroMs = now)
+        scope.launch { persistMark(isIntro, now) }
     }
 
-    /** 长按清除：写 0 即删键，下次再短按就是「重新记录」 */
+    /** 长按清除：删掉这一项，按钮回到文字占位 */
     fun clearMark(isIntro: Boolean) {
         marks = if (isIntro) marks.copy(introMs = 0L) else marks.copy(outroMs = 0L)
         scope.launch { persistMark(isIntro, 0L) }
     }
 
     /**
-     * 遥控器长按的判定：DOWN 起计时，同键重复事件刷新，UP 时看总时长是否越过阈值。
-     * 必须在 DOWN 时就绑上，否则第一次 DOWN 记不到起点，长按永远判不出来。
+     * 长按计时器。
+     * 按下瞬间就记录，按住越过 [MarkLongPressMs] 再清除——
+     * 动作全部挂在 DOWN 上，是因为遥控器的 UP 不保证送达，
+     * 把短按放在 UP 上会出现「按下没反应」。
      */
-    var markDownAtMs by remember { mutableLongStateOf(0L) }
-    var markPressed by remember { mutableStateOf<OsdSlot?>(null) }
-    var markJob by remember { mutableStateOf<Job?>(null) }
-    var markLongFired by remember { mutableStateOf(false) }
+    var markHoldJob by remember { mutableStateOf<Job?>(null) }
 
-    fun bindMarkLongPress(slot: OsdSlot?) {
-        markJob?.cancel()
-        markJob = null
-        markPressed = slot
-        markDownAtMs = System.currentTimeMillis()
-        markLongFired = false
-        if (slot == null) return
-        // 定时器兜底：长按期间按键会进入重复模式，某些遥控器最后不发 UP，
-        // 只靠 UP 判定会让「长按」永远等不到，用户以为按键失灵
-        markJob = scope.launch {
+    fun armLongPress(isIntro: Boolean) {
+        markHoldJob?.cancel()
+        markHoldJob = scope.launch {
             delay(MarkLongPressMs)
-            if (!markLongFired) {
-                markLongFired = true
-                clearMark(slot == OsdSlot.Intro)
-            }
+            clearMark(isIntro)
         }
     }
 
-    /** 同键重复事件：控件已经把长按吃掉了，这里只负责取消 UP 时的短按 */
-    fun onMarkRepeat() {
-        if (System.currentTimeMillis() - markDownAtMs >= MarkLongPressMs) markLongFired = true
-    }
-
-    /** UP / CLEAR：没被长按吃掉才执行短按 */
-    fun finishMarkPress() {
-        val slot = markPressed
-        markJob?.cancel()
-        markJob = null
-        markPressed = null
-        if (slot != null && !markLongFired) markOrJump(slot == OsdSlot.Intro)
-        markLongFired = false
+    fun cancelLongPress() {
+        markHoldJob?.cancel()
+        markHoldJob = null
     }
 
     fun togglePlay() {
@@ -619,24 +633,27 @@ fun PlayerScreen(
             .fillMaxSize()
             .background(Color.Black)
             .onKeyEvent { event ->
-                // 片头/片尾的长按判定要在 KeyDown 之前挂上：DOWN 就是计时起点。
-                // 其余按键一律清掉挂起态，避免上下键移走焦点后长按还记在旧槽位上
+                // 片头/片尾：按下即记录，按住越过阈值则清除。
+                // 两个动作都挂在 DOWN 上——遥控器的 UP 不保证送达，
+                // 挂在 UP 上会变成「按下没反应」；重复事件只吞掉，不重复记录
                 val isCenterKey = event.key == Key.DirectionCenter || event.key == Key.Enter
                 val markSlot = focusedSlot.takeIf {
-                    osdVisible && errorMessage == null && !anyPanelVisible() && isCenterKey &&
+                    isCenterKey && osdVisible && errorMessage == null && !anyPanelVisible() &&
                         (it == OsdSlot.Intro || it == OsdSlot.Outro)
                 }
-                when (event.type) {
-                    KeyEventType.KeyDown -> if (markPressed != markSlot) bindMarkLongPress(markSlot)
-                    KeyEventType.KeyUp -> {
-                        if (markPressed != null) {
-                            finishMarkPress()
-                            // KeyUp 不再往下走，否则 OK 键会顺手把播放暂停掉
-                            return@onKeyEvent true
-                        }
+                if (markSlot != null) {
+                    if (event.type == KeyEventType.KeyDown &&
+                        !event.nativeKeyEvent.isLongPress
+                    ) {
+                        recordMark(markSlot == OsdSlot.Intro)
+                        armLongPress(markSlot == OsdSlot.Intro)
                     }
-                    else -> Unit
+                    if (event.type == KeyEventType.KeyUp) cancelLongPress()
+                    showOsd()
+                    return@onKeyEvent true
                 }
+                // 焦点已离开片头/片尾时，任何按键都要撤销悬挂的长按计时
+                if (event.type == KeyEventType.KeyUp) cancelLongPress()
                 if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
                 if (errorMessage != null) {
                     return@onKeyEvent when (event.key) {
@@ -654,12 +671,6 @@ fun PlayerScreen(
                 }
                 when (event.key) {
                     Key.DirectionCenter, Key.Enter -> {
-                        // 片头/片尾已经由上面的长按追踪接管：短按在这里执行，长按留给 KeyUp 判定
-                        if (markPressed != null) {
-                            onMarkRepeat()
-                            showOsd()
-                            return@onKeyEvent true
-                        }
                         when {
                             // 选集是横滑列表：左右移焦点，确认键在这里真正切集
                             episodePanelVisible -> {
@@ -705,7 +716,7 @@ fun PlayerScreen(
                                     focusedAspectIndex = AspectModes.indexOf(settings.aspectMode)
                                         .coerceAtLeast(0)
                                 }
-                                // 片头/片尾不展开面板：短按由 markPressed 分支处理，这里不可达
+                                // 片头/片尾不展开面板：记录动作已在 onKeyEvent 出口处理
                                 OsdSlot.Intro, OsdSlot.Outro -> Unit
                             }
                             // 没有面板在展开时，OK 键就是播放/暂停（用户明确要求的全局行为）

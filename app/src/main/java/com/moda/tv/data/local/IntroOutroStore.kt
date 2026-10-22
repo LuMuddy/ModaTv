@@ -31,6 +31,10 @@ interface IntroOutroStore {
     /** ms <= 0 表示清除，把这一项删掉而不是写 0 */
     suspend fun setIntro(cid: String, ms: Long)
     suspend fun setOutro(cid: String, ms: Long)
+    /** 删掉一部剧的记录：与「删观看历史」联动，历史没了这部标记也不该留着 */
+    suspend fun remove(cid: String)
+    /** 清空全部：与「清空观看历史」联动 */
+    suspend fun clear()
 }
 
 // 与收藏/历史/播放设置并列的第四个 DataStore，委托保证同一 context 复用一个实例
@@ -41,8 +45,11 @@ private val Context.introOutroDataStore: DataStore<Preferences> by
  * 键名带上 cid：Preferences 的键名在运行时拼是允许的，
  * 这样不用再手写一套「cid → 标记」的 JSON 编解码，也不会因为 cid 里有特殊字符而解析失败。
  */
-private fun introKey(cid: String) = longPreferencesKey("intro_$cid")
-private fun outroKey(cid: String) = longPreferencesKey("outro_$cid")
+private const val INTRO_PREFIX = "intro_"
+private const val OUTRO_PREFIX = "outro_"
+
+private fun introKey(cid: String) = longPreferencesKey(INTRO_PREFIX + cid)
+private fun outroKey(cid: String) = longPreferencesKey(OUTRO_PREFIX + cid)
 
 object IntroOutroStoreImpl {
     @Volatile
@@ -88,6 +95,29 @@ private class DataStoreIntroOutroStore(
         if (cid.isBlank()) return
         dataStore.edit { prefs ->
             if (ms > 0L) prefs[outroKey(cid)] = ms else prefs.remove(outroKey(cid))
+        }
+    }
+
+    override suspend fun remove(cid: String) {
+        if (cid.isBlank()) return
+        dataStore.edit { prefs ->
+            prefs.remove(introKey(cid))
+            prefs.remove(outroKey(cid))
+        }
+    }
+
+    /**
+     * 只删本模块自己的键：cid 来自历史条目，逐个删比按前缀清理更稳
+     * （Preferences 没有前缀通配删除，且这样不会误伤未来新增的键）。
+     */
+    override suspend fun clear() {
+        dataStore.edit { prefs ->
+            // 必须用 longPreferencesKey 删：Preferences.Key 的相等性包含类型，
+            // 拿 stringPreferencesKey 删同名键匹配不上，会静默什么都删不掉
+            prefs.asMap().keys
+                .map { it.name }
+                .filter { it.startsWith(INTRO_PREFIX) || it.startsWith(OUTRO_PREFIX) }
+                .forEach { name -> prefs.remove(longPreferencesKey(name)) }
         }
     }
 }
