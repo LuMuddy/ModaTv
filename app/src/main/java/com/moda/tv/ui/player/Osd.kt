@@ -40,7 +40,7 @@ val OsdBottomInset = 148.dp
 /**
  * OSD 里可以用遥控器上下切换的一级入口。
  * 倍速与弹幕各自是独立入口，不再共用一个「设置」壳。
- * 片头/片尾是「一键定位」型入口：不展开面板，短按记录或跳转、长按清除记录。
+ * 片头/片尾是「一键记录」型入口：不展开面板，短按记录当前位置、长按清除记录。
  */
 enum class OsdSlot {
     Quality,
@@ -236,27 +236,12 @@ fun PlayerOsd(
                         OsdButton(
                             label = slotLabel(slot, selectedTier, settings, introMs, outroMs),
                             focused = focusedSlot == slot,
-                            muted = when (slot) {
-                                OsdSlot.Danmaku -> !settings.danmakuEnabled
-                                // 没记录时压暗，一眼能看出「这个还没量过」
-                                OsdSlot.Intro -> introMs <= 0L
-                                OsdSlot.Outro -> outroMs <= 0L
-                                else -> false
-                            },
+                            // 片头/片尾不做压暗：整个工具栏只有弹幕有「关」这个状态，
+                            // 给它们单独压灰会显得两块按钮是同级的异类，与其它按钮不一致
+                            muted = slot == OsdSlot.Danmaku && !settings.danmakuEnabled,
                         )
                         Spacer(Modifier.width(6.dp))
                     }
-                }
-                // 片头/片尾的清除是长按，界面上必须有一句说明，否则用户永远发现不了
-                val markSlot = focusedSlot
-                val markHint = when {
-                    markSlot == OsdSlot.Intro && introMs > 0L -> "长按确认键清除片头记录"
-                    markSlot == OsdSlot.Outro && outroMs > 0L -> "长按确认键清除片尾记录"
-                    else -> null
-                }
-                if (markHint != null) {
-                    Spacer(Modifier.height(6.dp))
-                    Text(markHint, style = TvCaption, color = ItemTextColor.copy(alpha = 0.7f))
                 }
             }
         }
@@ -277,9 +262,9 @@ private fun slotLabel(
     OsdSlot.Speed -> settings.speedLabel
     OsdSlot.Danmaku -> "弹幕"
     OsdSlot.Aspect -> "比例"
-    // 记过就把时间直接写进按钮：用户要的「页面显示对应的时间」就是这一行
-    OsdSlot.Intro -> if (introMs > 0L) "片头 ${formatClock(introMs)}" else "片头"
-    OsdSlot.Outro -> if (outroMs > 0L) "片尾 ${formatClock(outroMs)}" else "片尾"
+    // 有记录就只显示时间，不再重复「片头/片尾」四个字；没记录时才用文字占位
+    OsdSlot.Intro -> if (introMs > 0L) formatClock(introMs) else "片头"
+    OsdSlot.Outro -> if (outroMs > 0L) formatClock(outroMs) else "片尾"
 }
 
 /** 工具栏按钮：聚焦只换底色与描边，文字始终白色 */
@@ -379,13 +364,15 @@ private fun ProgressBar(
         // 片头/片尾位置在进度条上打一根白线：除了按钮文字，用户还能看出「跳到哪里去」
         listOf(introMs, outroMs).forEach { mark ->
             if (mark > 0L && durationMs > 0L && mark < durationMs) {
+                val fraction = (mark / total).coerceIn(0f, 1f)
                 Box(
                     Modifier
-                        .fillMaxWidth((mark / total).coerceIn(0f, 1f))
+                        .fillMaxWidth(fraction)
                         .fillMaxHeight(),
                     contentAlignment = Alignment.CenterEnd,
                 ) {
-                    Box(Modifier.width(3.dp).fillMaxHeight().background(Color(0xCCFFFFFF)))
+                    // 2dp 白线压在 6dp 进度条上，比 3dp 更不像「已播进度」
+                    Box(Modifier.width(2.dp).fillMaxHeight().background(Color(0xE6FFFFFF)))
                 }
             }
         }
