@@ -69,6 +69,8 @@ fun FavoritesScreen(
 ) {
     val firstCardFocus = remember { FocusRequester() }
     var firstFocusDone by remember { mutableStateOf(false) }
+    // 与历史页同一条规则：清空是批量不可撤销操作，先弹确认
+    var confirmClear by remember { mutableStateOf(false) }
 
     // 首帧布局完成前 requestFocus 会直接抛，等两帧再抢焦点。
     // 空态没有可聚焦元素是不成问题的：返回键由 AppRoot 全局接，不依赖焦点落在哪个控件上。
@@ -94,7 +96,11 @@ fun FavoritesScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Text("我的收藏 ${entries.size} 部", style = TvHeading, color = ModaColors.Text)
-            ActionButton(text = "清空全部", onClick = onClear, enabled = entries.isNotEmpty())
+            ActionButton(
+                text = "清空全部",
+                onClick = { confirmClear = true },
+                enabled = entries.isNotEmpty(),
+            )
         }
 
         Spacer(Modifier.height(24.dp))
@@ -120,6 +126,18 @@ fun FavoritesScreen(
                 }
             }
         }
+    }
+
+    if (confirmClear) {
+        ClearConfirmDialog(
+            title = "清空全部收藏？",
+            message = "将删除 ${entries.size} 部收藏，删除后无法恢复。",
+            onConfirm = {
+                confirmClear = false
+                onClear()
+            },
+            onDismiss = { confirmClear = false },
+        )
     }
 }
 
