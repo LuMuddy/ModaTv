@@ -33,6 +33,8 @@
     <string name="settings_playback_decoder_hint">硬解省电、4K 更流畅；软解兼容性更好。注意：ExoPlayer 内核的软解只能挑系统自带的软件解码器，系统没带就仍走硬解；IJK 内核的软解才是内置 ffmpeg 的真软解，老片、特殊编码要靠它。播放页里改的只作用于当前这部剧。</string>
     <string name="settings_playback_default_speed">默认播放倍速</string>
     <string name="settings_playback_default_speed_hint">每次起播都用这个倍速；播放页里临时调的速度只影响当前这一集。</string>
+    <string name="settings_playback_danmaku">弹幕默认开关</string>
+    <string name="settings_playback_danmaku_hint">每次起播默认关闭弹幕；播放页的弹幕面板里可以随时打开。</string>
     <string name="settings_playback_skip_intro">自动跳片头</string>
     <string name="settings_playback_skip_intro_hint">只对从来没播过的视频生效；看过的剧不会再把片头裁掉。</string>
     <string name="settings_playback_skip_outro">自动跳片尾</string>

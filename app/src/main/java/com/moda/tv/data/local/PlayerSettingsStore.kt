@@ -107,7 +107,7 @@ enum class DecoderMode(@param:StringRes val labelRes: Int) {
  */
 data class PlayerSettings(
     val speed: Float = 1.0f,
-    val danmakuEnabled: Boolean = true,
+    val danmakuEnabled: Boolean = false,
     val danmakuSizeSp: Float = 22f,
     val danmakuRegion: DanmakuRegion = DanmakuRegion.FullScreen,
     val danmakuTopPercent: Float = 0f,
@@ -164,7 +164,7 @@ private val Context.playerSettingsDataStore: DataStore<Preferences> by
 
 /**
  * 键与默认值：
- * playback_speed = 1.0 / danmaku_enabled = true / danmaku_font_size_sp = 22
+ * playback_speed = 1.0 / danmaku_enabled = false / danmaku_font_size_sp = 22
  * danmaku_region = FullScreen / danmaku_top_percent = 0 / danmaku_bottom_percent = 0
  * aspect_mode = Fit
  */
@@ -233,7 +233,7 @@ private fun Preferences.toSettings(): PlayerSettings {
     val regionName = this[Keys.DANMAKU_REGION]
     return PlayerSettings(
         speed = PlayerSpeedOptions.minByOrNull { kotlin.math.abs(it.value - speed) }?.value ?: 1.0f,
-        danmakuEnabled = this[Keys.DANMAKU_ENABLED] ?: true,
+        danmakuEnabled = this[Keys.DANMAKU_ENABLED] ?: false,
         danmakuSizeSp = DanmakuSizeOptions.minByOrNull { kotlin.math.abs(it.sizeSp - size) }?.sizeSp ?: 22f,
         danmakuRegion = DanmakuRegion.entries.firstOrNull { it.name == regionName }
             ?: DanmakuRegion.FullScreen,
