@@ -16,12 +16,16 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.FavoriteBorder
@@ -48,7 +52,6 @@ import com.moda.tv.model.SeriesDetail
 import com.moda.tv.model.Tier
 import com.moda.tv.ui.components.ListMetrics
 import com.moda.tv.ui.components.listBottomSafe
-import com.moda.tv.ui.components.listItemInset
 import com.moda.tv.ui.components.ActionButton
 import com.moda.tv.ui.components.Badge
 import com.moda.tv.ui.components.EmptyState
@@ -63,6 +66,7 @@ import androidx.tv.material3.ButtonDefaults
 import androidx.tv.material3.Icon
 import androidx.tv.material3.IconButton
 import androidx.tv.material3.IconButtonDefaults
+import kotlin.math.abs
 import com.moda.tv.ui.theme.ModaColors
 import com.moda.tv.ui.theme.TvBody
 import com.moda.tv.ui.theme.TvCaption
@@ -77,25 +81,15 @@ private val TRAILER_KEYS = listOf(
 private fun isTrailer(ep: Episode): Boolean = TRAILER_KEYS.any { ep.label.contains(it) }
 
 /**
- * 选集网格的列数，与首页/收藏/历史页的 4~5 列口径一致。
- * 取 5 而不是 4：详情页要在一屏里尽量多露集数，976 集的剧少滚一屏就是少按十几次方向键。
+ * 「居中」时最多补几次滚动。
+ *
+ * 为什么不是一次算准：scrollToItem 的 offset 要的是「这一格左边缘距视口左边缘多少像素」，
+ * 而每格宽度不等（有分集描述的卡固定 190dp，没有的贴合文字），得先跳过去、量到实际宽度才谈得上算偏移。
+ *
+ * 为什么要有上限：靠近两端时根本滚不过去（第 1 格左边没有空间，最后一格右边也没有），
+ * scrollBy 会被列表边界夹住，差值永远不为 0，没有次数的循环会在那里空转。
  */
-private const val EPISODE_GRID_COLUMNS = 5
-
-/**
- * 网格里排在集数前面的满宽 item 数量。
- * 页头（海报/标题/主按钮/简介/收藏/「选集」小标题）整体塞进**一个** span 满宽的 item，
- * 而不是拆成十几个：页头是整块出现、整块滚走的，拆开只会让 Lazy 多记十几个 item 的测量结果。
- * 这个常量同时喂给 scrollToItem 的下标换算——页头数量和下标偏移必须是同一个数。
- */
-private const val GRID_HEADER_ITEM_COUNT = 1
-
-/**
- * 进详情页时等历史读盘的上限（帧）。
- * DataStore 是从磁盘读的，正常情况下两帧内必有结果；
- * 取 ~0.2 秒（12 帧）既是"绝不可能被用户看到"的时长，也保证读盘卡住时焦点不会一直悬空。
- */
-private const val RESUME_WAIT_FRAMES = 12
+private const val CENTER_SCROLL_PASSES = 3
 
 /** 「看完」角标的前景色：深底上的柔绿，与 VIP 的金、预告的靛蓝互不混淆 */
 private val CompletedGreen = Color(0xFF7BD88F)
@@ -126,15 +120,37 @@ private fun formatProgress(ms: Long): String {
 }
 
 /**
- * 剧集详情：海报 + 标题 + 主按钮（继续播放/播放）+ 简介 + 收藏 + 5 列选集网格。
+ * 把轨道里的第 [index] 格滚到视口正中间。
  *
- * 整页只有**一个**滚动容器（LazyVerticalGrid），页头作为满宽 item 放在网格里，
- * 而不是「verticalScroll 外层 + 内层集数列表」：两个方向都吃滚动/焦点寻路的嵌套容器，
- * 在遥控器上表现为上下键突然滚了整页、或焦点卡在边界不动。
+ * 为什么不用 scrollToItem(index, offset) 一步到位：offset 要的是
+ * 「这一格左边缘距视口左边缘多少像素」，而每格宽度不等（有分集描述的卡固定 190dp，
+ * 没有的贴合文字），必须先跳过去、量到实际宽度才谈得上算偏移。
+ * 所以是「跳 → 等一帧拿到测量结果 → 按差值补滚动」，最多补 [CENTER_SCROLL_PASSES] 次。
  *
- * 为什么集数从 LazyRow 改成 LazyVerticalGrid：实测有 976 集的剧，
- * 横向一条要滑 976 格才到头，方向键按到手软；改用网格后纵向滚动 + 每屏 5×N 格，
- * 且 Lazy 只在需要时组合——视口外的那 900 多格根本不进入 composition。
+ * 靠近两端时居中做不到（第 1 格左边没有空间、最后一格右边也没有），
+ * scrollBy 会被列表边界夹住，此时它会退化成「贴边」——这是预期行为，不是 bug。
+ */
+private suspend fun LazyListState.scrollToCentered(index: Int) {
+    scrollToItem(index)
+    repeat(CENTER_SCROLL_PASSES) {
+        withFrameNanos { }
+        val info = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index } ?: return
+        val delta = (info.offset + info.size / 2f) - layoutInfo.viewportSize.width / 2f
+        if (abs(delta) < 1f) return
+        scrollBy(delta)
+    }
+}
+
+/**
+ * 剧集详情：海报 + 标题 + 主按钮（继续播放/播放）+ 简介 + 收藏 + 单行选集轨道。
+ *
+ * 集数形态按「这部剧返回了几集」分两种，不按屏幕宽度：
+ *   - 只有 1 集 → 整段「选集」都不出现，页面只剩上面的主按钮（播放 / 继续播放 mm:ss）；
+ *   - 多集 → 页头下方一行横向轨道，方向键左右一路往右延伸；
+ *     有观看记录时把记录的那一格横向居中，每次进页面都重新居中（见 scrollToCentered）。
+ *
+ * 纵轴只有一个滚动容器（这层 Column），横轴只交给轨道自己的 LazyRow：
+ * 两层都吃上下键的话，在遥控器上表现为上下键突然滚了整页、或焦点卡在边界不动。
  */
 @Composable
 fun DetailScreen(
@@ -150,7 +166,7 @@ fun DetailScreen(
     // 尾部可选参数：既有调用点（含测试/预览）不必改动
     isFavorite: Boolean = false,
     onToggleFavorite: () -> Unit = {},
-    /** 历史落点：这部剧看过的话，选中态与首焦点都落在那一集 */
+    /** 历史落点：这部剧看过的话，选中态落在那一集、选集轨道滚到它居中（不抢焦点） */
     resume: DetailResume? = null,
     /**
      * 这部剧已看完的集号集合，用于选集卡右上角的「看完」角标。
@@ -159,11 +175,16 @@ fun DetailScreen(
      */
     completedIndexes: Set<Int> = emptySet(),
 ) {
-    val episodeFocus = remember { FocusRequester() }
     val ctaFocus = remember { FocusRequester() }
-    val gridState = rememberLazyGridState()
+    // 选集轨道的滚动状态。每次进详情页都是一份新的 composition，
+    // 所以「居中」每次加载都会重来一次，不会记住上一次的滚动位置
+    val railState = rememberLazyListState()
 
     val episodes = detail?.episodes.orEmpty()
+
+    // 只有一集（预告/花絮也算集数，只要返回 2 条以上就算多集）时不画选集：
+    // 一集本来就没有可选的东西，「第 1 集」孤零零挂在下面只会让人以为别的集没加载出来
+    val showRail = episodes.size > 1
 
     // 历史落点：历史里看过的那一集，-1 表示这部剧没记录。
     // 优先按 vid 匹配——集数表重排/换档后 episodeIndex 可能漂移，
@@ -202,44 +223,41 @@ fun DetailScreen(
     // 初值直接取历史落点：历史读的是本地盘、详情走的是网络，通常历史先到，
     // 这里就能一次落位，不必先画一帧「第 1 集选中」再跳过去。
     val initialIndex = resumeIndex.coerceAtLeast(0)
-    // 落位只做一次：didPlaceByResume 之后历史再怎么变（比如看完一集回来）都只跟随，不再抢焦点
+    // 落位只做一次：didPlaceByResume 之后历史再怎么变（比如看完一集回来）轨道都只跟随，不再跳
     var didPlaceByResume by remember(detail?.cid) { mutableStateOf(false) }
     // 用户自己操作过（点了某一集/主按钮），任何迟到的自动落位都必须让路
     var userTouched by remember(detail?.cid) { mutableStateOf(false) }
     var currentIndex by remember(detail?.cid) { mutableStateOf(initialIndex) }
-    // focusRequester 挂在哪一格。落定后就不再跟着 currentIndex 走：
-    // 请求过焦点之后再改这一格的 modifier，等于让已聚焦的卡片换一份节点。
-    var focusIndex by remember(detail?.cid) { mutableStateOf(initialIndex) }
 
     val current = episodes.getOrNull(currentIndex)
 
-    // 首焦点策略：
-    //   历史已到货 → 落到「当前集」（滚动进视野后 requestFocus）；
-    //   历史还在路上 → 先等 RESUME_WAIT_FRAMES 帧，等不到**绝不落到第 1 集**，
-    //     而是落到主按钮上。这是本次改造的核心取舍：
-    //     焦点一旦钉在第 1 集，历史到货后选中态（currentIndex）会跳到第 40 集，
-    //     而光标还留在第 1 集，两者分家——遥控器上这比"焦点没在集数上"难受得多。
-    //     主按钮是页面唯一的主 CTA，落在那里既不会和历史落点冲突，也一按确认就能播。
-    // 历史到货后本 effect 会因为 resume?.loaded 变成 true 而重启，此时再把焦点交给当前集。
-    // 等布局落地再 requestFocus，否则目标格还没 compose 出来会抛且焦点永远不落。
+    // 首焦点**永远**是主按钮（播放 / 继续播放 mm:ss），单集多集都一样。
+    //
+    // 早先的版本把焦点交给选集里"看过的那一格"，真机上表现为一进详情页整页往上顶一下：
+    // 轨道在页头下方，Compose 为了让聚焦项可见会去滚外层的纵向容器。主按钮在标题正下方、
+    // 首屏就在眼前，落在那里页面一动不动，而且它本来就是这页唯一的主操作。
+    //
+    // 因此历史落点与焦点彻底解耦：历史只决定「哪一格显示为选中」+「轨道滚到哪一格居中」。
+    // 等布局落地再 requestFocus，否则目标还没 compose 出来会抛且焦点永远不落。
+    LaunchedEffect(detail?.cid, episodes.size) {
+        if (episodes.isEmpty()) return@LaunchedEffect
+        withFrameNanos { }
+        runCatching { ctaFocus.requestFocus() }
+    }
+
+    // 历史落点：只滚轨道，不碰焦点。
+    // 历史还在读盘时直接返回、**不猜第 1 集**；等 loaded 变 true 让本 effect 重跑一次再落位。
+    // 每次进详情页都是新 composition，didPlaceByResume 随之重置，所以这是"每次加载都重新居中"。
     LaunchedEffect(detail?.cid, episodes.size, resume?.loaded, resumeIndex) {
-        if (episodes.isEmpty() || userTouched) return@LaunchedEffect
-        if (resume?.loaded != true) {
-            repeat(RESUME_WAIT_FRAMES) { withFrameNanos { } }
-            runCatching { ctaFocus.requestFocus() }
-            return@LaunchedEffect
-        }
+        if (!showRail || userTouched) return@LaunchedEffect
+        if (resume?.loaded != true) return@LaunchedEffect
         if (didPlaceByResume) return@LaunchedEffect
         didPlaceByResume = true
         val target = resumeIndex.coerceIn(0, episodes.lastIndex)
         currentIndex = target
-        focusIndex = target
-        // 目标格往往在可视区之外（第 916 集），网格还没 compose 它。
-        // scrollToItem 是直接跳，不会把中间那些格逐个组合出来。
-        runCatching { gridState.scrollToItem(GRID_HEADER_ITEM_COUNT + target) }
-        withFrameNanos { }
-        withFrameNanos { }
-        runCatching { episodeFocus.requestFocus() }
+        // 目标格往往在轨道之外（第 916 集），还没 compose 出来，靠 scrollToItem 直接跳，
+        // 再把这一格拉到视口正中；没有记录时 target 是 0，贴左边即可
+        railState.scrollToCentered(target)
     }
 
     /** 主按钮/集数点击的统一入口：onPlay 只认 Episode，断点由 VM 内部 resumePosition 带出 */
@@ -256,164 +274,171 @@ fun DetailScreen(
             detail == null && error != null -> ErrorState(error, onRetry = onRetry ?: onBack)
             detail == null && loading -> LoadingState("正在拉取剧集…")
             detail == null -> EmptyState("没有拿到剧集信息", onRetry = onRetry ?: onBack)
-            else -> LazyVerticalGrid(
-                state = gridState,
-                columns = GridCells.Fixed(EPISODE_GRID_COLUMNS),
-                // 焦点放大 1.08 + 3dp 描边的溢出量全部由 contentPadding 兜住：
-                // 网格按自己的视口裁剪子项，padding 写在视口**内侧**才不会切掉第 0/最后一列的白边。
-                contentPadding = ListMetrics.gridContentPadding(top = 32.dp),
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
-                // 每格顶部已经留了 12dp 给「看完」角标悬挂，行间距相应收窄
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.fillMaxSize(),
+            else -> Column(
+                // 整页只有一个纵向滚动容器：页头 + 单行选集轨道 + 底部提示。
+                // 纵轴只有这一层，横轴交给轨道自己的 LazyRow——
+                // 两层都吃上下键的话，遥控器上会突然滚掉整页，或者焦点卡在边界不回头。
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(top = 32.dp, bottom = ListMetrics.TailPad),
             ) {
-                item(key = "detail-header", span = { GridItemSpan(maxLineSpan) }) {
-                    Column {
-                        // 左图右信息：电视上竖版海报配剧名比纯文字更像一个详情页
-                        Row(Modifier.fillMaxWidth()) {
-                            RemoteImage(
-                                url = detail.cover,
-                                title = detail.title,
-                                modifier = Modifier
-                                    .width(200.dp)
-                                    .aspectRatio(3f / 4f),
-                                corner = 14.dp,
+                // 左图右信息：电视上竖版海报配剧名比纯文字更像一个详情页
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = ListMetrics.SidePad),
+                ) {
+                    RemoteImage(
+                        url = detail.cover,
+                        title = detail.title,
+                        modifier = Modifier
+                            .width(200.dp)
+                            .aspectRatio(3f / 4f),
+                        corner = 14.dp,
+                    )
+                    Spacer(Modifier.width(32.dp))
+                    Column(Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = detail.title.ifBlank { "未命名剧集" },
+                                style = TvTitle,
+                                color = ModaColors.Text,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false),
                             )
-                            Spacer(Modifier.width(32.dp))
-                            Column(Modifier.weight(1f)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        text = detail.title.ifBlank { "未命名剧集" },
-                                        style = TvTitle,
-                                        color = ModaColors.Text,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f, fill = false),
-                                    )
-                                    if (current?.isVip == true) {
-                                        Spacer(Modifier.width(12.dp))
-                                        Badge("VIP", color = Color(0xFFE0A32E))
-                                    }
-                                }
-                                Spacer(Modifier.height(18.dp))
-                                // 主 CTA 紧跟标题：这是进详情页后最想按的一颗键，
-                                // 位置必须在「标题下方第一眼」而不是滚动之后。
-                                if (episodes.isNotEmpty()) {
-                                    PlayCtaButton(
-                                        text = if (hasResume) "继续播放 $continueProgress" else "播放",
-                                        modifier = Modifier.focusRequester(ctaFocus),
-                                        onClick = {
-                                            // 有断点从断点那一集起播，没断点从第 1 集起播。
-                                            // 不自己传 positionMs：断点由 VM 的 resumePosition 在
-                                            // push 时查历史得出，这里塞一个快照反而会和真实历史打架。
-                                            val target = episodes.getOrNull(continueIndex) ?: episodes.first()
-                                            playEpisode(target)
-                                        },
-                                    )
-                                }
-                                if (description.isNotBlank()) {
-                                    Spacer(Modifier.height(16.dp))
-                                    Text(
-                                        text = description,
-                                        style = TvBody.copy(fontSize = 18.sp),
-                                        color = ModaColors.TextDim,
-                                        maxLines = 3,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
-                                Spacer(Modifier.height(20.dp))
-                                // 收藏是这个数据唯一的产生入口：没有它收藏页永远是空的。
-                                // 这一行只放收藏：返回交给遥控器返回键（AppRoot 的 BackHandler），
-                                // 屏幕上再摆一个「返回」只是重复入口，还占掉了海报右侧最顺手的一格。
-                                FavoriteIconButton(isFavorite = isFavorite, onClick = onToggleFavorite)
+                            if (current?.isVip == true) {
+                                Spacer(Modifier.width(12.dp))
+                                Badge("VIP", color = Color(0xFFE0A32E))
                             }
                         }
-
-                        Spacer(Modifier.height(26.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            SectionTitle("选集")
-                            Spacer(Modifier.width(12.dp))
-                            Text(
-                                "${episodes.size} 集",
-                                style = TvCaption.copy(fontSize = 16.sp),
-                                color = ModaColors.TextDim,
+                        Spacer(Modifier.height(18.dp))
+                        // 主 CTA 紧跟标题：这是进详情页后最想按的一颗键，
+                        // 位置必须在「标题下方第一眼」而不是滚动之后。
+                        // 只有一集时它是整页唯一的播放入口——下面不会再有选集。
+                        if (episodes.isNotEmpty()) {
+                            PlayCtaButton(
+                                text = if (hasResume) "继续播放 ${continueProgress}" else "播放",
+                                modifier = Modifier.focusRequester(ctaFocus),
+                                onClick = {
+                                    // 有断点从断点那一集起播，没断点从第 1 集起播。
+                                    // 不自己传 positionMs：断点由 VM 的 resumePosition 在
+                                    // push 时查历史得出，这里塞一个快照反而会和真实历史打架。
+                                    val target = episodes.getOrNull(continueIndex) ?: episodes.first()
+                                    playEpisode(target)
+                                },
                             )
                         }
-                        Spacer(Modifier.height(12.dp))
-                        if (episodes.isEmpty()) {
-                            Text("该剧没有返回任何集数", style = TvBody, color = ModaColors.Danger)
+                        if (description.isNotBlank()) {
+                            Spacer(Modifier.height(16.dp))
+                            Text(
+                                text = description,
+                                style = TvBody.copy(fontSize = 18.sp),
+                                color = ModaColors.TextDim,
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis,
+                            )
                         }
+                        Spacer(Modifier.height(20.dp))
+                        // 收藏是这个数据唯一的产生入口：没有它收藏页永远是空的。
+                        // 这一行只放收藏：返回交给遥控器返回键（AppRoot 的 BackHandler），
+                        // 屏幕上再摆一个「返回」只是重复入口，还占掉了海报右侧最顺手的一格。
+                        FavoriteIconButton(isFavorite = isFavorite, onClick = onToggleFavorite)
                     }
                 }
 
-                // 全部集数都交给网格的 Lazy 管理：976 集的剧也只组合视口里的那十几格。
-                items(count = episodes.size, key = { i -> "ep-${episodes[i].vid}-$i" }) { index ->
-                    val ep = episodes[index]
-                    val finished = index in completedIndexes
-                    // 顶部这 12dp 是给「看完」角标悬挂用的：角标完全塞进卡片内部，
-                    // 会正好压住「第 N 集」那行字（没有分集描述的卡，卡里只有这一行）。
-                    // 顶部 12dp 给「看完」角标悬挂用（角标塞进卡片内部会压住「第 N 集」那行字）；
-                    // 额外的 listItemInset 是聚焦放大 1.08 的溢出余量——
-                    // 不留就会被 LazyGrid 视口把白边下沿切平，见 ListMetrics.ItemFocusInset
-                    Box(Modifier.fillMaxWidth().listItemInset().padding(top = 12.dp)) {
-                        EpisodeChip(
-                            index = ep.index,
-                            label = ep.label,
-                            isVip = ep.isVip,
-                            isTrailer = isTrailer(ep),
-                            selected = index == currentIndex,
-                            cover = ep.cover,
-                            // 空串时 EpisodeChip 不画第二行：没有描述就不占位置
-                            summary = ep.summary,
-                            // fillMaxWidth 必须排在 width(190dp) 之前（EpisodeChip 内部是 modifier.then(写死宽度)）：
-                            // fillMaxWidth 先把约束钉成单元格宽度，后面的 width(190dp) 只能被夹回该宽度，
-                            // 于是每一格等宽、5 列排得平。反过来的话 190dp 会顶出 161dp 的单元格。
-                            modifier = if (index == focusIndex) {
-                                Modifier.fillMaxWidth().focusRequester(episodeFocus)
-                            } else {
-                                Modifier.fillMaxWidth()
-                            },
-                            onClick = {
-                                // 用户已经自己选了：钉住落点判定，别让迟到的历史把选择顶掉
-                                userTouched = true
-                                currentIndex = index
-                                onPlay(ep)
-                            },
+                if (episodes.isEmpty()) {
+                    Text(
+                        "该剧没有返回任何集数",
+                        style = TvBody,
+                        color = ModaColors.Danger,
+                        modifier = Modifier.padding(start = ListMetrics.SidePad, top = 26.dp),
+                    )
+                } else if (showRail) {
+                    // 只有一集时整段「选集」都不画：一集本来就没有可选的东西，
+                    // 轨道里孤零零躺着一个「第 1 集」只会让人以为还有别的集没加载出来。
+                    Spacer(Modifier.height(26.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = ListMetrics.SidePad),
+                    ) {
+                        SectionTitle("选集")
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            "${episodes.size} 集",
+                            style = TvCaption.copy(fontSize = 16.sp),
+                            color = ModaColors.TextDim,
                         )
-                        if (finished) {
-                            // 骑在卡片右上角：Box 预留的 12dp + 负 offset 让它压在边框上，
-                            // 既不吃卡片内部那行字，也不会被网格裁掉（绘制范围仍在单元格内）。
-                            CompletedBadge(
-                                Modifier
-                                    .align(Alignment.TopEnd)
-                                    .offset(x = (-4).dp, y = (-12).dp),
-                            )
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    // 轨道满宽铺开（不跟页头一起吃 SidePad）：卡片要能一路滑到屏幕边缘，
+                    // 侧边留白改由 contentPadding 提供，否则滑到一半的卡片会在 48dp 处被硬裁一刀。
+                    LazyRow(
+                        state = railState,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        contentPadding = PaddingValues(
+                            horizontal = ListMetrics.SidePad,
+                            // 纵向 8dp 兜住聚焦放大 1.08 的溢出，否则轨道上下沿会切掉白边
+                            vertical = 8.dp,
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        items(count = episodes.size, key = { i -> "ep-${episodes[i].vid}-$i" }) { index ->
+                            val ep = episodes[index]
+                            val finished = index in completedIndexes
+                            // 顶部 12dp 给「已看完」勾标悬挂用（勾塞进卡片内部会压住「第 N 集」那行字）
+                            Box(Modifier.padding(top = 12.dp)) {
+                                EpisodeChip(
+                                    index = ep.index,
+                                    label = ep.label,
+                                    isVip = ep.isVip,
+                                    isTrailer = isTrailer(ep),
+                                    selected = index == currentIndex,
+                                    cover = ep.cover,
+                                    // 空串时 EpisodeChip 不画第二行：没有描述就不占位置
+                                    summary = ep.summary,
+                                    onClick = {
+                                        // 用户已经自己选了：钉住落点判定，别让迟到的历史把选择顶掉
+                                        userTouched = true
+                                        currentIndex = index
+                                        onPlay(ep)
+                                    },
+                                )
+                                if (finished) {
+                                    // 骑在卡片右上角：Box 预留的 12dp + 负 offset 让它压在边框上，
+                                    // 既不吃卡片内部那行字，也不会被轨道裁掉（绘制范围仍在单元格内）。
+                                    CompletedBadge(
+                                        Modifier
+                                            .align(Alignment.TopEnd)
+                                            .offset(x = (-4).dp, y = (-12).dp),
+                                    )
+                                }
+                            }
                         }
                     }
                 }
 
                 if (loading || error != null) {
-                    item(key = "detail-footer", span = { GridItemSpan(maxLineSpan) }) {
-                        Column {
-                            if (loading) {
-                                Spacer(Modifier.height(24.dp))
-                                Text(
-                                    "正在刷新…",
-                                    style = TvCaption.copy(fontSize = 16.sp),
-                                    color = ModaColors.TextDim,
-                                )
-                            }
-                            // 已有内容时的刷新失败不该盖住整页，只在底部提示并给重试
-                            if (error != null) {
-                                Spacer(Modifier.height(24.dp))
-                                Text(error, style = TvBody, color = ModaColors.Danger)
-                                Spacer(Modifier.height(12.dp))
-                                ActionButton(
-                                    text = "重试",
-                                    onClick = { onRetry?.invoke() ?: onBack() },
-                                    primary = true,
-                                )
-                            }
+                    Column(Modifier.padding(horizontal = ListMetrics.SidePad)) {
+                        if (loading) {
+                            Spacer(Modifier.height(24.dp))
+                            Text(
+                                "正在刷新…",
+                                style = TvCaption.copy(fontSize = 16.sp),
+                                color = ModaColors.TextDim,
+                            )
+                        }
+                        // 已有内容时的刷新失败不该盖住整页，只在底部提示并给重试
+                        if (error != null) {
+                            Spacer(Modifier.height(24.dp))
+                            Text(error, style = TvBody, color = ModaColors.Danger)
+                            Spacer(Modifier.height(12.dp))
+                            ActionButton(
+                                text = "重试",
+                                onClick = { onRetry?.invoke() ?: onBack() },
+                                primary = true,
+                            )
                         }
                     }
                 }
@@ -480,8 +505,13 @@ private fun PlayCtaButton(
 }
 
 /**
- * 「✓ 看完」角标。
- * 不是可点击/可聚焦元素（Box + Text 没有 clickable/focusable），
+ * 「✅ 已看完」角标：一颗绿勾图标，骑在集数卡右上角。
+ *
+ * 为什么从「✓ 看完」三个字改成图标：选集是一条横向轨道，卡片本身只有 60 来 dp 高，
+ * 文字角标要么压住「第 N 集」那行字、要么把卡片撑高；一颗 20dp 的勾在 3 米外一眼就认得出，
+ * 而「看完」这两个字对这个状态是冗余的——勾本身已经说明完了。
+ *
+ * 不是可点击/可聚焦元素（Box + Icon 没有 clickable/focusable），
  * 所以它可以放心写死颜色——它不会进到"聚焦反白底"的配色规则里。
  * 底色用 80% 不透明的近黑而不是纯色：压在浅色海报或蓝底选中卡上都还能读，
  * 同时不会把卡片本身的底色完全盖掉。
@@ -490,14 +520,15 @@ private fun PlayCtaButton(
 private fun CompletedBadge(modifier: Modifier = Modifier) {
     Box(
         modifier = modifier
-            .background(Color(0xCC0B0B0F), RoundedCornerShape(8.dp))
-            .padding(horizontal = 8.dp, vertical = 2.dp),
+            .background(Color(0xCC0B0B0F), CircleShape)
+            .padding(2.dp),
     ) {
-        Text(
-            text = "✓ 看完",
-            style = TvCaption.copy(fontSize = 12.sp, fontWeight = FontWeight.Medium),
-            color = CompletedGreen,
-            maxLines = 1,
+        Icon(
+            imageVector = Icons.Filled.CheckCircle,
+            // 无障碍：图标没有文字，状态必须进描述
+            contentDescription = "已看完",
+            tint = CompletedGreen,
+            modifier = Modifier.size(20.dp),
         )
     }
 }
