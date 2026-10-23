@@ -1,5 +1,7 @@
 package com.moda.tv.ui
 
+import android.util.Log
+import androidx.activity.compose.BackHandler
 import androidx.annotation.StringRes
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -70,6 +72,11 @@ import com.moda.tv.data.local.PlayerCore
 import com.moda.tv.data.local.PlayerSettings
 import com.moda.tv.data.local.PlayerSettingsStoreImpl
 import com.moda.tv.data.local.PlayerSpeedOptions
+import com.moda.tv.model.AppError
+import com.moda.tv.ui.components.TvColumnFocusScroll
+import com.moda.tv.ui.components.TvColumnFocusScroller
+import com.moda.tv.ui.components.TvFirstFocus
+import com.moda.tv.ui.components.appErrorText
 import com.moda.tv.ui.player.PlayerEngines
 import com.moda.tv.ui.theme.ModaColors
 import com.moda.tv.ui.theme.TvBody
@@ -77,8 +84,33 @@ import com.moda.tv.ui.theme.TvCaption
 import com.moda.tv.ui.theme.TvTitle
 import kotlinx.coroutines.launch
 
-/** 子页的一条操作反馈：成功用普通色，失败用 Danger，肉眼可分辨 */
-internal data class Notice(val text: String, val failed: Boolean)
+/**
+ * 子页的一条操作反馈：成功用普通色，失败用 Danger，肉眼可分辨。
+ *
+ * 失败有两种来源：[text] 是实现方已经落好资源的成品文案（代理网址校验/探活的具体原因），
+ * [error] 则是一个逃出回调的异常——异常原文只进日志，这里只留错误码，
+ * 文案到渲染那一刻再由 [appErrorText] 按当前语言取（提前拼成字符串等于把语言烤死）。
+ */
+internal data class Notice(
+    /** 已解析好的文案：成功提示，或实现方给出的失败原因；与 [error] 二者取其一 */
+    val text: String = "",
+    val failed: Boolean,
+    val error: AppError? = null,
+)
+
+/**
+ * 设置页的异常只进日志，不上屏。
+ *
+ * 从前这里直接把 `e.message` 当提示：那是给排错看的原文（Java 英文、类名与参数都会漏出去），
+ * 与「错误码 → 文案只有 ErrorText 一个出口」冲突，而且在英文系统上照样是中英混排。
+ * [code] 由调用点给：探活/保存失败与本地存储故障用户能做的事不同，
+ * 前者是「再试一次」，后者是「存储坏了」（AppError.Storage）。全部落成 Unknown
+ * 会把后者说成「加载失败，请稍后重试」——一句指向网络的错话。
+ */
+private fun logSettingsFailure(what: String, e: Throwable, code: AppError): AppError {
+    Log.w("Settings", "$what 失败", e)
+    return code
+}
 
 /**
  * 「清空」类操作的确认意图：标题、警示文案与完成提示跟着它走。
@@ -172,15 +204,14 @@ internal fun SettingsSectionScaffold(
      * 请求必须在首帧布局之后（两帧），否则目标还没上树，requestFocus 会抛。
      */
     firstFocus: FocusRequester? = null,
-    content: @Composable ColumnScope.() -> Unit,
+    /**
+     * 内容拿到滚动器的跟焦入口：每一行都要挂 Modifier.then(scroller.itemModifier(行下标))。
+     * 下标只需在本页内唯一——它只是行与行之间的身份，跟焦会把它和量到的坐标对上。
+     */
+    content: @Composable ColumnScope.(TvColumnFocusScroller) -> Unit,
 ) {
-    if (firstFocus != null) {
-        LaunchedEffect(firstFocus) {
-            withFrameNanos { }
-            withFrameNanos { }
-            runCatching { firstFocus.requestFocus() }
-        }
-    }
+    // 首焦点统一走 TvFirstFocus：等两帧再抢、失败不抛，页面里不再各写一遍重试
+    TvFirstFocus(firstFocus)
     Column(
         Modifier
             .fillMaxSize()
@@ -203,18 +234,24 @@ internal fun SettingsSectionScaffold(
         // 滚动状态必须 hoist 出来复用：写在 Modifier 链里会让每次重组都新建一个 ScrollState，
         // 滚动位置立刻被重置——表现就是「往下滑到一半，再往上就滑不动了」。
         val scrollState = rememberScrollState()
+        // 非懒容器的跟焦（Common.kt 的 TvColumnFocusScroll）：行自己上报坐标，缺多少补多少。
+        // 不能靠 Compose 默认的 bring-into-view —— 它只把目标滚到"刚好露出来"，
+        // 从 A 按下到 B 再按回 A，A 永远停在"刚露出"，顶部留白回不到进页面时的位置。
+        val columnFocus = TvColumnFocusScroll(scrollState)
         Column(
             Modifier
                 .fillMaxWidth()
                 .weight(1f)
+                // 视口修饰符必须在 .verticalScroll 之前：写在后面量到的是跟随滚动的内层内容
+                .then(columnFocus.viewportModifier)
                 .verticalScroll(scrollState)
-                // R2 的纵向版：上下各留出呼吸空间，被聚焦行才不会贴住标题或屏幕下沿。
-                // 非 Lazy 的 verticalScroll 由 Compose 负责把焦点行带进视口，
-                // 这里只需保证"带进来之后不被切"。
+                // 顶部 16dp 与跟焦的 comfort 同值：第一行聚焦时差值为 0，页面停在 offset 0。
+                // 底部 40dp 属于滚动内容，最后一行聚焦时它的 3dp 白圈不会被裁。
                 .padding(top = 16.dp, bottom = 40.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
-            content = content,
-        )
+        ) {
+            content(columnFocus)
+        }
     }
 }
 
@@ -239,7 +276,7 @@ internal fun PlaybackSettingsSection(holder: PlayerSettingsHolder) {
     SettingsSectionScaffold(
         title = stringResource(SettingsSectionId.Playback.titleRes),
         firstFocus = firstFocus,
-    ) {
+    ) { columnFocus ->
         SectionCard {
             // 内核：按 PlayerCore.entries 生成，而不是手写两行。
             // 枚举以后加档位时这里自动跟上，不用再回来改一遍布局。
@@ -255,6 +292,7 @@ internal fun PlaybackSettingsSection(holder: PlayerSettingsHolder) {
                 },
                 hint = stringResource(R.string.settings_playback_core_hint),
                 focusRequester = firstFocus,
+                modifier = Modifier.then(columnFocus.itemModifier(0)),
                 onCycle = {
                     val entries = PlayerCore.entries
                     val i = entries.indexOf(settings.playerCore).coerceAtLeast(0)
@@ -271,6 +309,7 @@ internal fun PlaybackSettingsSection(holder: PlayerSettingsHolder) {
                 // 只能是挑系统自带的软件编解码器，系统没带就仍退回硬解；
                 // 只有 IJK 的软解才是真正打包在 so 里的 ffmpeg。
                 hint = stringResource(R.string.settings_playback_decoder_hint),
+                modifier = Modifier.then(columnFocus.itemModifier(1)),
                 onCycle = {
                     val entries = DecoderMode.entries
                     val i = entries.indexOf(settings.decoderMode).coerceAtLeast(0)
@@ -284,6 +323,7 @@ internal fun PlaybackSettingsSection(holder: PlayerSettingsHolder) {
                 label = stringResource(R.string.settings_playback_default_speed),
                 value = speedLabelOf(settings.defaultSpeed),
                 hint = stringResource(R.string.settings_playback_default_speed_hint),
+                modifier = Modifier.then(columnFocus.itemModifier(2)),
                 onCycle = {
                     val i = PlayerSpeedOptions
                         .indexOfFirst { it.value == settings.defaultSpeed }
@@ -300,6 +340,7 @@ internal fun PlaybackSettingsSection(holder: PlayerSettingsHolder) {
                 label = stringResource(R.string.settings_playback_skip_intro),
                 value = onOff(settings.skipIntroEnabled),
                 hint = stringResource(R.string.settings_playback_skip_intro_hint),
+                modifier = Modifier.then(columnFocus.itemModifier(3)),
                 onCycle = {
                     holder.apply(settings.copy(skipIntroEnabled = !settings.skipIntroEnabled))
                 },
@@ -309,6 +350,7 @@ internal fun PlaybackSettingsSection(holder: PlayerSettingsHolder) {
                 label = stringResource(R.string.settings_playback_skip_outro),
                 value = onOff(settings.skipOutroEnabled),
                 hint = stringResource(R.string.settings_playback_skip_outro_hint),
+                modifier = Modifier.then(columnFocus.itemModifier(4)),
                 onCycle = {
                     holder.apply(settings.copy(skipOutroEnabled = !settings.skipOutroEnabled))
                 },
@@ -349,11 +391,19 @@ internal fun NetworkSettingsSection(
     val fieldFocus = remember { FocusRequester() }
     val firstFocus = remember { FocusRequester() }
     // commit()/onClick 都是普通函数与 lambda，里面不能再调 @Composable 的 stringResource，
-    // 所以把这几条反馈文案在这里先取好
+    // 所以固定文案在这里先取好；失败文案不预取，等渲染时再按来源翻译（见 Notice）
     val savedText = stringResource(R.string.settings_network_saved)
-    val validateFailedText = stringResource(R.string.settings_network_validate_failed)
     val resetDoneText = stringResource(R.string.settings_network_reset_done)
-    val resetFailedText = stringResource(R.string.settings_network_reset_failed)
+
+    // 编辑态自己一层返回：只收起编辑（等同取消），不退出子页。
+    // 全应用只有 AppRoot 那一条 BackHandler，没有这一层时编辑中按返回会连子页一起退掉、
+    // 刚敲的草稿全丢。enabled 只在编辑态为 true：收起之后返回键自然交还给 AppRoot 的总链，
+    // 「返回逐层退出」的语义没有被改掉，只是多插了一层。
+    BackHandler(enabled = editing) {
+        editing = false
+        draft = apiBase
+        notice = null
+    }
 
     // 进入编辑才拉输入法：遥控器没有键盘，不显式 show() 的话模拟器上只是个空框
     LaunchedEffect(editing) {
@@ -366,6 +416,13 @@ internal fun NetworkSettingsSection(
         }
     }
 
+    // 退出编辑必须把焦点交回「代理网址」这一行：编辑区（输入框 + 保存/取消）整块在
+    // if (editing) 里，收起编辑态时这些焦点节点一起离开组合，没人接的话遥控器按方向键
+    // 完全没有反应、屏幕上也不再有白框。
+    // 用 TvFirstFocus 重发（key 跟着 editing 走）：editing 由 true 翻成 false 时它等两帧
+    // 再抢，正好等编辑区的销毁提交完；editing 为 true 时传 null 停掉，免得跟输入框抢焦点。
+    TvFirstFocus(requester = if (editing) null else firstFocus, key = editing)
+
     fun startEdit() {
         draft = apiBase
         notice = null
@@ -376,18 +433,22 @@ internal fun NetworkSettingsSection(
         if (checking) return
         checking = true
         scope.launch {
-            val error = try {
-                onSaveApiBase(draft)
+            // 失败有两条来源，必须分开接：实现方给的是成品文案（它落了资源），
+            // 逃出来的异常只留错误码——e.message 是给排错看的原文，不许上屏（见 logSettingsFailure）
+            var failureText: String? = null
+            var failureCode: AppError? = null
+            try {
+                failureText = onSaveApiBase(draft)
             } catch (e: Exception) {
-                e.message ?: validateFailedText
+                failureCode = logSettingsFailure("保存代理网址", e, AppError.Unknown)
             }
             checking = false
-            if (error == null) {
+            if (failureText == null && failureCode == null) {
                 // 生效后才退出编辑态：失败留在框里，用户能就地改而不是从头再来
                 editing = false
                 notice = Notice(savedText, failed = false)
             } else {
-                notice = Notice(error, failed = true)
+                notice = Notice(text = failureText.orEmpty(), failed = true, error = failureCode)
             }
         }
     }
@@ -396,7 +457,7 @@ internal fun NetworkSettingsSection(
         title = stringResource(SettingsSectionId.Network.titleRes),
         subtitle = stringResource(R.string.settings_network_subtitle),
         firstFocus = firstFocus,
-    ) {
+    ) { columnFocus ->
         SectionCard {
             // 代理网址：点这一行直接进编辑框手动输入（电视上用系统输入法）。
             // 扫码配置是更省事的可选入口，但手动输入必须始终可用——
@@ -405,6 +466,7 @@ internal fun NetworkSettingsSection(
                 label = stringResource(R.string.settings_network_api_base),
                 value = apiBase,
                 chevron = true,
+                modifier = Modifier.then(columnFocus.itemModifier(0)),
                 focusRequester = firstFocus,
                 onClick = { startEdit() },
             )
@@ -414,7 +476,9 @@ internal fun NetworkSettingsSection(
                 // 这样它和上面那行的关系看起来就是「展开」而不是「另起一段」。
                 // 左右补 RingRoom：编辑区本身不聚焦，但它要和外层卡片的行左边缘对齐。
                 Column(
-                    Modifier.padding(horizontal = RingRoom),
+                    // 编辑区整块作为一个跟焦行（下标 1）：它随编辑态出现/消失，
+                    // 里面的输入框与保存/取消都在这块之内，跟焦只需把它整块摆进视口。
+                    Modifier.padding(horizontal = RingRoom).then(columnFocus.itemModifier(1)),
                 ) {
                     val focusManager = LocalFocusManager.current
                     BasicTextField(
@@ -472,6 +536,7 @@ internal fun NetworkSettingsSection(
                 label = stringResource(R.string.settings_network_scan),
                 value = stringResource(R.string.settings_network_scan_value),
                 chevron = true,
+                modifier = Modifier.then(columnFocus.itemModifier(2)),
                 onClick = { lanConfig = true },
             )
 
@@ -481,6 +546,7 @@ internal fun NetworkSettingsSection(
                 label = stringResource(R.string.settings_network_reset),
                 value = stringResource(if (checking) R.string.common_processing else R.string.common_reset),
                 chevron = true,
+                modifier = Modifier.then(columnFocus.itemModifier(3)),
                 onClick = {
                     if (!checking) {
                         checking = true
@@ -489,7 +555,8 @@ internal fun NetworkSettingsSection(
                                 onResetApiBase()
                                 notice = Notice(resetDoneText, failed = false)
                             } catch (e: Exception) {
-                                notice = Notice(e.message ?: resetFailedText, failed = true)
+                                // 恢复默认 = 删键，这里唯一的失败源就是本地存储
+                                notice = Notice(failed = true, error = logSettingsFailure("恢复默认地址", e, AppError.Storage))
                             } finally {
                                 checking = false
                             }
@@ -503,18 +570,21 @@ internal fun NetworkSettingsSection(
                 label = stringResource(R.string.settings_network_clear_history),
                 value = stringResource(R.string.common_clear),
                 chevron = true,
+                modifier = Modifier.then(columnFocus.itemModifier(4)),
                 onClick = { pendingClear = PendingClear.History },
             )
             SettingRow(
                 label = stringResource(R.string.settings_network_clear_favorites),
                 value = stringResource(R.string.common_clear),
                 chevron = true,
+                modifier = Modifier.then(columnFocus.itemModifier(5)),
                 onClick = { pendingClear = PendingClear.Favorites },
             )
             SettingRow(
                 label = stringResource(R.string.settings_network_clear_search),
                 value = stringResource(R.string.common_clear),
                 chevron = true,
+                modifier = Modifier.then(columnFocus.itemModifier(6)),
                 onClick = { pendingClear = PendingClear.SearchHistory },
             )
             HintText(stringResource(R.string.settings_network_clear_hint))
@@ -524,7 +594,8 @@ internal fun NetworkSettingsSection(
         // 挂在某一行内部会让别处触发的消息跑到看不见的位置。
         notice?.let { n ->
             Text(
-                n.text,
+                // 成功句是固定文案；失败只带错误码，必须此刻按当前语言渲染
+                if (n.error != null) appErrorText(n.error) else n.text,
                 style = TvBody.copy(fontSize = 18.sp),
                 color = if (n.failed) ModaColors.Danger else ModaColors.AccentSoft,
                 modifier = Modifier.padding(top = 8.dp),
@@ -580,14 +651,31 @@ internal fun AboutSettingsSection(
     versionName: String = BuildConfig.VERSION_NAME,
     versionCode: Int = BuildConfig.VERSION_CODE,
 ) {
-    SettingsSectionScaffold(title = stringResource(SettingsSectionId.About.titleRes)) {
+    SettingsSectionScaffold(title = stringResource(SettingsSectionId.About.titleRes)) { columnFocus ->
         SectionCard {
-            // 纯展示行不带箭头：让「能点」与「不能点」一眼可分
-            SettingRow(stringResource(R.string.settings_about_app_name), "ModaTV")
-            SettingRow(stringResource(R.string.settings_about_version), versionName)
-            SettingRow(stringResource(R.string.settings_about_build), versionCode.toString())
-            SettingRow(stringResource(R.string.settings_about_android), androidVersion())
-            SettingRow(stringResource(R.string.settings_about_resolution), resolutionText())
+            // 纯展示行不带箭头：让「能点」与「不能点」一眼可分。
+            // 这一页一行都不可聚焦（R9 有意为之），itemModifier 挂在行外壳上不会触发，
+            // 但保持与其它两个子页同一套写法，将来某行变成可点时不必再回来补。
+            SettingRow(
+                stringResource(R.string.settings_about_app_name), "ModaTV",
+                modifier = Modifier.then(columnFocus.itemModifier(0)),
+            )
+            SettingRow(
+                stringResource(R.string.settings_about_version), versionName,
+                modifier = Modifier.then(columnFocus.itemModifier(1)),
+            )
+            SettingRow(
+                stringResource(R.string.settings_about_build), versionCode.toString(),
+                modifier = Modifier.then(columnFocus.itemModifier(2)),
+            )
+            SettingRow(
+                stringResource(R.string.settings_about_android), androidVersion(),
+                modifier = Modifier.then(columnFocus.itemModifier(3)),
+            )
+            SettingRow(
+                stringResource(R.string.settings_about_resolution), resolutionText(),
+                modifier = Modifier.then(columnFocus.itemModifier(4)),
+            )
         }
     }
 }
@@ -665,6 +753,8 @@ internal fun CyclingRow(
     warning: String? = null,
     /** 首焦点落点用；空表示这一行不参与首焦点 */
     focusRequester: FocusRequester? = null,
+    /** 挂 TvColumnFocusScroll 的 itemModifier（量「行 + 它的说明」这一整块外壳） */
+    modifier: Modifier = Modifier,
 ) {
     SettingItem(
         label = label,
@@ -674,6 +764,7 @@ internal fun CyclingRow(
         hint = hint,
         warning = warning,
         focusRequester = focusRequester,
+        modifier = modifier,
     )
 }
 
@@ -693,8 +784,13 @@ internal fun SettingItem(
     chevron: Boolean = false,
     onClick: (() -> Unit)? = null,
     focusRequester: FocusRequester? = null,
+    /**
+     * 挂 TvColumnFocusScroll 的 itemModifier。量的是「行 + 它的说明」这一整块，
+     * 不是行内某个小元素——说明文字属于这一行，跟焦移动时整块一起走。
+     */
+    modifier: Modifier = Modifier,
 ) {
-    Column(Modifier.fillMaxWidth()) {
+    Column(modifier.fillMaxWidth()) {
         SettingRow(
             label = label,
             value = value,

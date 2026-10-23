@@ -1,12 +1,15 @@
 package com.moda.tv.data.local
 
 import android.content.Context
+import android.util.Log
+import androidx.annotation.StringRes
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.moda.tv.R
 import com.moda.tv.data.Api
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -84,6 +87,18 @@ private class ApiSettingsPreferencesStore(
 }
 
 /**
+ * probe 的失败原因：一条 string 资源 + 可选的技术细节占位参数。
+ *
+ * 刻意不携带成品句子：文案要在渲染那一刻取（见 TvViewModel.commitApiBase），
+ * 否则数据层就被某一份文案绑死了。[detail] 只放 HTTP 状态码、okhttp 的原始 message
+ * 这类技术信息，不是文案。
+ */
+data class ProbeFailure(
+    @param:StringRes val messageRes: Int,
+    val detail: String? = null,
+)
+
+/**
  * 代理网址的"合法性"与"可用性"是两件事，分别由 [normalize] 与 [probe] 负责：
  * 前者纯本地判断，后者真发一次 a=probe 请求。设置页只有两者都过才落盘。
  */
@@ -114,8 +129,11 @@ internal object ApiEndpoint {
     /**
      * 用 a=probe 实测新地址。返回 null 表示可用，否则是给用户看的失败原因。
      * 复用 Api.http 的连接池，只是把总时长压到 [PROBE_TIMEOUT_SEC]。
+     *
+     * 失败原因只以 [ProbeFailure]（资源 id + 占位参数）返回，**不带成品句子**：
+     * 数据层一旦握着文案，它就只能原样上屏，改词也无从下手。
      */
-    suspend fun probe(base: String): String? = withContext(Dispatchers.IO) {
+    suspend fun probe(base: String): ProbeFailure? = withContext(Dispatchers.IO) {
         val req = Request.Builder()
             .url("$base?a=probe")
             .header("Content-Type", "application/json")
@@ -130,24 +148,31 @@ internal object ApiEndpoint {
                 .newCall(req)
                 .execute()
                 .use { resp ->
-                    if (!resp.isSuccessful) return@withContext "HTTP ${resp.code}"
+                    if (!resp.isSuccessful) {
+                        return@withContext ProbeFailure(R.string.probe_http_status, resp.code.toString())
+                    }
                     val text = resp.body?.string().orEmpty()
-                    if (text.isBlank()) return@withContext "接口无响应内容"
+                    if (text.isBlank()) return@withContext ProbeFailure(R.string.probe_empty_body)
                     val json = try {
                         JSONObject(text)
                     } catch (e: Exception) {
                         null
-                    } ?: return@withContext "该地址不是 ModaTV 接口（未返回 JSON）"
+                    } ?: return@withContext ProbeFailure(R.string.probe_not_json)
                     // 后端 ok=true 才算真的通：能连上但答不了 probe 的地址对我们没有价值
                     if (json.optBoolean("ok", false)) {
                         null
                     } else {
-                        json.optString("error").ifBlank { "该地址拒绝了 probe 请求" }
+                        // 后端给的 error 原文只进日志：它是上游的任意文本，摆到用户眼前既可能
+                        // 是一串英文，也可能是别的语言
+                        val backendError = json.optString("error")
+                        Log.w("ApiSettings", "probe 被拒绝：$backendError")
+                        ProbeFailure(R.string.probe_rejected)
                     }
                 }
         } catch (e: Exception) {
-            // 连不上/超时/DNS 失败：把 okhttp 的原因直接交给用户，比"未知错误"有用
-            e.message ?: e::class.java.simpleName
+            // 连不上/超时/DNS：okhttp 的 message 是技术信息，作为占位参数交给 UI，
+            // 句子本身仍从字符串资源来，文案只有一处出处
+            ProbeFailure(R.string.probe_connect_failed, e.message ?: e::class.java.simpleName)
         }
     }
 }

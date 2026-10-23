@@ -21,6 +21,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -29,17 +31,21 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import com.moda.tv.BuildConfig
+import com.moda.tv.R
 import com.moda.tv.data.Repo
 import com.moda.tv.data.local.CopyrightNoticeStoreImpl
 import com.moda.tv.data.local.SearchHistoryStoreImpl
 import com.moda.tv.model.LibraryEntry
 import com.moda.tv.ui.components.ActionButton
 import com.moda.tv.ui.components.ErrorState
+import com.moda.tv.ui.components.appErrorText
 import com.moda.tv.ui.components.LoadingState
+import com.moda.tv.ui.components.TvFirstFocus
 import com.moda.tv.ui.theme.ModaColors
 
 /** 全应用唯一入口：路由栈在 TvViewModel 里，这里只按栈顶渲染 */
@@ -142,6 +148,11 @@ fun AppRoot() {
 @Composable
 private fun ExitConfirmDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        // 弹窗一出现焦点必须已经在「取消」上：电视上没有鼠标，焦点空着的弹窗
+        // 只能靠乱按方向键找光标，而且更容易连击落到「确认退出」上。
+        // 抢焦点统一走 TvFirstFocus（等两帧、失败不抛），不在各弹窗里手写重试。
+        val cancelFocus = remember { FocusRequester() }
+        TvFirstFocus(cancelFocus)
         Column(
             Modifier
                 .width(520.dp)
@@ -150,18 +161,27 @@ private fun ExitConfirmDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
                 .padding(horizontal = 36.dp, vertical = 32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text("退出 ModaTv？", style = TextStyle(fontSize = 30.sp), color = ModaColors.Text)
+            Text(
+                stringResource(R.string.dialog_exit_title),
+                style = TextStyle(fontSize = 30.sp),
+                color = ModaColors.Text,
+            )
             Spacer(Modifier.height(12.dp))
             Text(
-                "按「确认」关闭应用，按「返回」继续观看",
+                stringResource(R.string.dialog_exit_message),
                 style = TextStyle(fontSize = 18.sp),
                 color = ModaColors.TextDim,
             )
             Spacer(Modifier.height(28.dp))
             Row {
-                ActionButton(text = "取消", onClick = onDismiss, primary = true)
+                ActionButton(
+                    text = stringResource(R.string.common_cancel),
+                    onClick = onDismiss,
+                    modifier = Modifier.focusRequester(cancelFocus),
+                    primary = true,
+                )
                 Spacer(Modifier.width(16.dp))
-                ActionButton(text = "确认退出", onClick = onConfirm)
+                ActionButton(text = stringResource(R.string.dialog_exit_confirm), onClick = onConfirm)
             }
         }
     }
@@ -179,7 +199,8 @@ private fun HomeRoute(vm: TvViewModel) {
     val history by vm.historyEntries.collectAsStateWithLifecycle()
     HomeScreen(
         loading = vm.homeLoading,
-        error = vm.homeError,
+        // 首页屏幕收的是成品文案（它自己不认错误码），翻译这一步只在这里做一次
+        error = vm.homeError?.let { appErrorText(it) },
         // 错误态重试 = 强制整页刷新：留着旧内容时用户点重试，等的就是真数据，
         // 而不是又一次被 30 分钟窗口挡回来的缓存
         onRetry = { vm.refreshAllHome("错误重试") },
@@ -388,8 +409,9 @@ private fun DetailRoute(vm: TvViewModel, dest: Dest.Detail) {
 @Composable
 private fun PlayerRoute(vm: TvViewModel) {
     when (val state = vm.player) {
-        is PlayerUi.Loading -> LoadingState("正在准备播放…")
-        is PlayerUi.Error -> ErrorState(state.message, onRetry = vm::retryPlayer)
+        is PlayerUi.Loading -> LoadingState(stringResource(R.string.core_player_preparing))
+        // 错误码到文案的唯一出口是 appErrorText：这里不许再出现任何自己拼的提示
+        is PlayerUi.Error -> ErrorState(appErrorText(state.error), onRetry = vm::retryPlayer)
         is PlayerUi.Ready -> PlayerScreen(
             url = state.url,
             title = state.title,
@@ -397,7 +419,8 @@ private fun PlayerRoute(vm: TvViewModel) {
             episodeLabel = state.episodeLabel,
             tiers = state.tiers,
             selectedTier = state.selectedTier,
-            danmaku = state.danmaku,
+            // 弹幕只有 TvViewModel 一个来源：窗口是 Compose 状态，换到新一窗就自动重组
+            danmaku = vm.danmakuWindow,
             startPositionMs = state.startPositionMs,
             onTierChange = vm::onTierChangeFromPlayer,
             onProgress = vm::onProgress,

@@ -6,6 +6,7 @@ import android.graphics.Color
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
+import com.moda.tv.R
 import java.io.BufferedInputStream
 import java.io.InputStream
 import java.io.OutputStream
@@ -37,6 +38,11 @@ import kotlinx.coroutines.launch
  * 不做 token 校验——能连上（局域网内）就允许改，端口不监听时外部根本无从下手。
  */
 class LanConfigServer(
+    /**
+     * 手机端页面的文案（lan_*）从这里取：页面渲染在手机浏览器里，同样是用户可见文案，
+     * 所以本类不持字面量，统一走资源。调用方传 applicationContext 即可。
+     */
+    private val context: Context,
     /** 读取当前生效的代理网址，用于预填网页输入框 */
     private val currentBase: () -> String,
     /**
@@ -48,7 +54,7 @@ class LanConfigServer(
     /** 保存成功回调（IO 线程），供电视端 Dialog 实时刷新 */
     private val onSaved: (String) -> Unit,
     /**
-     * 手机端页面模板，来自 assets/config.html（见 [loadPageTemplate]）。
+     * 手机端页面模板，来自 assets/index.html（见 [loadPageTemplate]）。
      * 页面文本不在本类里，改样式/文案只改那个文件，Kotlin 侧不动。
      */
     private val pageTemplate: String,
@@ -145,7 +151,7 @@ class LanConfigServer(
             request.method == "POST" && request.path == "/save" -> {
                 val raw = request.form["url"].orEmpty()
                 val outcome = when {
-                    raw.isBlank() -> SaveOutcome.Fail("请输入代理网址")
+                    raw.isBlank() -> SaveOutcome.Fail(context.getString(R.string.lan_err_url_required))
                     else -> save(raw)
                 }
                 when (outcome) {
@@ -257,12 +263,13 @@ class LanConfigServer(
         else -> "OK"
     }
 
-    // ---------------- 手机端页面（模板来自 assets/config.html）----------------
+    // ---------------- 手机端页面（模板来自 assets/index.html）----------------
 
     private fun pageHtml(current: String, error: String?, saved: String?): String {
         val value = htmlEscape(saved ?: current)
         val banner = when {
-            saved != null -> BANNER_OK
+            saved != null ->
+                "<div class=\"ok\">" + htmlEscape(context.getString(R.string.lan_banner_saved)) + "</div>"
             error != null -> "<div class=\"err\">" + htmlEscape(error) + "</div>"
             else -> ""
         }
@@ -287,18 +294,21 @@ class LanConfigServer(
 
     companion object {
         /** assets 下的页面模板文件名 */
-        private const val PAGE_ASSET = "config.html"
+        private const val PAGE_ASSET = "index.html"
 
         /**
-         * 读取 assets/config.html 作为手机端页面模板。
+         * 读取 assets/index.html 作为手机端页面模板。
          *
-         * 读失败（资源被裁掉、包体异常）时退回 [FALLBACK_PAGE]：
-         * 配置页是唯一的改地址入口，宁可少样式也不能给一张白页。
+         * 读失败（资源被裁掉、包体异常）时就地拼一张最简页面：
+         * 配置页是唯一的改地址入口，宁可少样式也不能给用户一张白页。
          */
         fun loadPageTemplate(context: Context): String = try {
             context.assets.open(PAGE_ASSET).bufferedReader(Charsets.UTF_8).use { it.readText() }
         } catch (e: Exception) {
-            FALLBACK_PAGE
+            "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">" +
+                "<title>ModaTV</title></head><body>" +
+                context.getString(R.string.lan_page_template_missing) +
+                "</body></html>"
         }
 
         private const val PREFERRED_PORT = 9999
@@ -309,19 +319,13 @@ class LanConfigServer(
         private const val MAX_BODY = 8 * 1024
         private const val HTML_TYPE = "text/html; charset=utf-8"
         private const val TEXT_TYPE = "text/plain; charset=utf-8"
-        private const val BANNER_OK = "<div class=\"ok\">已生效，可以关闭此页面</div>"
 
         /**
-         * assets/config.html 里的占位符；模板与替换两侧靠它对齐。
+         * assets/index.html 里的占位符；模板与替换两侧靠它对齐。
          * 提示条写成 HTML 注释，这样单独用浏览器打开模板时不会看到它。
          */
         private const val PLACEHOLDER_BANNER = "<!--BANNER_SLOT-->"
         private const val PLACEHOLDER_VALUE = "__VALUE__"
-
-        /** 资源缺失时的兜底：宁可让用户看到一句人话，也不要返回空白页 */
-        private const val FALLBACK_PAGE =
-            "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">" +
-                "<title>ModaTV</title></head><body>页面模板缺失，请在电视端手动修改代理网址。</body></html>"
     }
 }
 

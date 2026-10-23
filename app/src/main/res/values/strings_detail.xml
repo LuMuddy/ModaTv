@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  详情页（DetailScreen）文案。
+
+  为什么单独一个文件：详情页与本地库三页由同一批改动引入，按键前缀分文件才不会在
+  合并时互相覆盖；values/ 与 values-en/ 的键名必须逐字一致，缺一侧系统语言切过去就会露出中文。
+  这里只放「会上屏」的文案——日志与异常细节不进资源。
+-->
+<resources>
+    <string name="detail_loading">正在拉取剧集…</string>
+    <string name="detail_empty">没有拿到剧集信息</string>
+    <string name="detail_untitled">未命名剧集</string>
+    <string name="detail_play">播放</string>
+    <!-- %1$s 是断点时间（如 12:34），由 formatProgress 算出 -->
+    <string name="detail_continue_play">继续播放 %1$s</string>
+    <string name="detail_no_episodes">该剧没有返回任何集数</string>
+    <string name="detail_episodes_title">选集</string>
+    <!-- 选集轨道只在多于 1 集时出现，所以英文用复数形式是安全的 -->
+    <string name="detail_episode_count">%1$d 集</string>
+    <string name="detail_refreshing">正在刷新…</string>
+    <string name="detail_retry">重试</string>
+    <!-- 无障碍描述：角标只有图标没有文字，状态必须进 contentDescription -->
+    <string name="detail_completed_desc">已看完</string>
+    <string name="detail_fav_add_desc">收藏</string>
+    <string name="detail_fav_remove_desc">已收藏，点击取消收藏</string>
+</resources>

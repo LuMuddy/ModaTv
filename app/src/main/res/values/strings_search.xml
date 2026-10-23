@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ==================== 搜索页骨架 ==================== -->
+    <string name="search_title">搜索</string>
+    <string name="search_submit">搜索</string>
+    <string name="search_submitting">搜索中…</string>
+    <string name="search_back">返回</string>
+
+    <!-- ==================== 输入框 ==================== -->
+    <string name="search_hint_input">输入片名 / 演员…</string>
+    <string name="search_hint_hotword">搜索「%1$s」</string>
+    <string name="search_ime_hint">OK 搜索</string>
+
+    <!-- ==================== 结果与状态 ==================== -->
+    <string name="search_idle_hint">输入关键词后按「搜索」确认</string>
+    <string name="search_no_result">没有找到「%1$s」相关的内容</string>
+    <string name="search_result_count">共 %1$d 个结果</string>
+    <string name="search_loading">正在搜索「%1$s」…</string>
+    <string name="search_empty_retry_hint">换个关键词试试</string>
+    <string name="search_empty_idle">还没有搜索内容</string>
+
+    <!-- ==================== 搜索历史 / 热词 ==================== -->
+    <string name="search_history_title">搜索历史</string>
+    <string name="search_clear_history">清空历史</string>
+    <string name="search_hotword_title">热词</string>
+    <string name="search_hotword_tap_hint">点按直接搜索</string>
+</resources>

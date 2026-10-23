@@ -50,9 +50,7 @@
     <string name="settings_network_clear_search">清除搜索历史</string>
     <string name="settings_network_clear_hint">清空操作不可撤销，每项都会先弹一次确认。</string>
     <string name="settings_network_saved">已生效：代理网址已更新，后续请求立即走新地址</string>
-    <string name="settings_network_validate_failed">校验失败</string>
     <string name="settings_network_reset_done">已恢复默认地址</string>
-    <string name="settings_network_reset_failed">恢复默认失败</string>
 
     <!-- ==================== 设置：关于子页 ==================== -->
     <string name="settings_about_app_name">应用名称</string>

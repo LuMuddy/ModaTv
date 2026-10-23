@@ -52,6 +52,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -67,9 +68,11 @@ import androidx.tv.material3.IconButtonDefaults
 import androidx.tv.material3.LocalContentColor
 import java.util.Locale
 import kotlinx.coroutines.delay
+import com.moda.tv.R
 import com.moda.tv.model.LibraryEntry
 import com.moda.tv.model.Tier
 import com.moda.tv.model.VideoItem
+import com.moda.tv.ui.player.tierNameText
 import com.moda.tv.ui.theme.ModaColors
 import com.moda.tv.ui.theme.TvBody
 import com.moda.tv.ui.theme.TvCaption
@@ -173,6 +176,12 @@ fun ActionButton(
     modifier: Modifier = Modifier,
     primary: Boolean = false,
     enabled: Boolean = true,
+    /*
+     * 默认按"弹窗/空态里的裸按钮"处理，允许聚焦放大。
+     * 一旦这个按钮被放进滚动容器（如详情页的纵向页体），必须传 1f：
+     * 放大只改绘制不改布局，白框上下沿会被视口切掉，见 docs/TV_RULES.md R1。
+     */
+    focusedScale: Float = 1.08f,
 ) {
     val corner = 10.dp
     Button(
@@ -191,7 +200,7 @@ fun ActionButton(
             disabledContainerColor = ModaColors.Surface,
             disabledContentColor = ModaColors.TextDim,
         ),
-        scale = ButtonDefaults.scale(scale = 1f, focusedScale = 1.08f),
+        scale = ButtonDefaults.scale(scale = 1f, focusedScale = focusedScale),
         border = ButtonDefaults.border(
             border = Border.None,
             focusedBorder = focusBorder(3.dp, corner),
@@ -438,9 +447,18 @@ private fun WatchProgressBar(positionMs: Long, durationMs: Long, modifier: Modif
     }
 }
 
-/** 集号按人话显示：库里存的是 0 起下标，用户看到的是「第几集」 */
+/**
+ * 集号按人话显示：库里存的是 0 起下标，用户看到的是「第几集」。
+ *
+ * 是 @Composable 而不是纯函数：文案要跟系统语言走，只能在这里取资源（见 ErrorText.kt 的同类理由）。
+ */
+@Composable
 private fun entryEpisodeLabel(episodeIndex: Int): String =
-    if (episodeIndex < 0) "集号未知" else "第 ${episodeIndex + 1} 集"
+    if (episodeIndex < 0) {
+        stringResource(R.string.core_episode_unknown)
+    } else {
+        stringResource(R.string.core_episode_index, episodeIndex + 1)
+    }
 
 /** 进度后缀：「· 32:15 / 47:38」；没有时长信息时返回空串，不显示半截文案 */
 private fun watchProgressSuffix(entry: LibraryEntry): String {
@@ -973,7 +991,7 @@ fun EpisodeChip(
 private fun EpisodeIndexRow(index: Int, isVip: Boolean, isTrailer: Boolean) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
-            text = "第 ${index + 1} 集",
+            text = stringResource(R.string.core_episode_index, index + 1),
             style = TvBody.copy(fontSize = 17.sp),
             // 未选中聚焦是白底：必须跟内容色，否则烤死的 #F2F3F7 变隐形（1.11:1）
             color = contentColor(),
@@ -985,7 +1003,7 @@ private fun EpisodeIndexRow(index: Int, isVip: Boolean, isTrailer: Boolean) {
         }
         if (isTrailer) {
             Spacer(Modifier.width(6.dp))
-            Badge("预告", color = Color(0xFF5C6BC0))
+            Badge(stringResource(R.string.core_badge_trailer), color = Color(0xFF5C6BC0))
         }
     }
 }
@@ -1023,7 +1041,7 @@ fun TierChip(
     ) {
         Box(Modifier.fillMaxWidth().padding(vertical = 10.dp), contentAlignment = Alignment.Center) {
             Text(
-                text = tier.displayName,
+                text = tierNameText(tier.display),
                 style = TvBody.copy(fontSize = 17.sp),
                 color = contentColor(),
                 maxLines = 1,

@@ -20,13 +20,17 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.moda.tv.R
 import com.moda.tv.model.Episode
+import com.moda.tv.ui.components.TvRowFocusScroll
 import com.moda.tv.ui.components.railScrollRoom
 import com.moda.tv.ui.components.RemoteImage
 import com.moda.tv.ui.theme.TvBody
@@ -73,10 +77,20 @@ fun EpisodePanel(
 ) {
     if (episodes.isEmpty()) return
     val listState = rememberLazyListState()
-    // 打开面板时把焦点项滚进视野，用户不用先盲摸
-    LaunchedEffect(focusedIndex) {
-        listState.animateScrollToItem(focusedIndex.coerceIn(0, episodes.lastIndex))
+    /**
+     * 打开面板时的那一次落位：把当前集直接摆进视口，用户不用先盲摸。
+     *
+     * 这是**一次性**的，key 是集数表而不是焦点下标。之前是按焦点下标触发的动画滚动：
+     * 连按左右时每一下按键都会取消上一段动画再起一段新的，表现为整排卡片追着按键跳、
+     * 本来就看得见的卡也被猛拖一下。左右跟焦现在归 TvRowFocusScroll（scrollBy 立即滚，见 R2）。
+     */
+    val initialIndex = remember(episodes) { focusedIndex.coerceIn(0, episodes.lastIndex) }
+    LaunchedEffect(episodes) {
+        listState.scrollToItem(initialIndex)
     }
+    // 与首页/详情页的选集轨道同一套跟焦：按整格滚、左右留 16dp 呼吸位，
+    // 连按时每次按键当场把目标格摆好，不做动画
+    TvRowFocusScroll(state = listState, focusedIndex = focusedIndex)
     val shape = RoundedCornerShape(14.dp)
     Column(
         Modifier
@@ -87,7 +101,7 @@ fun EpisodePanel(
             .padding(vertical = 12.dp)
     ) {
         Text(
-            "选集 · 共 " + episodes.size + " 集",
+            stringResource(R.string.player_episode_panel_title, episodes.size),
             style = TvCaption,
             modifier = Modifier.padding(horizontal = 18.dp),
         )
@@ -127,7 +141,7 @@ fun EpisodePanel(
                     )
                     Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
                         Text(
-                            "第 " + (episode.index + 1) + " 集",
+                            stringResource(R.string.player_episode_number, episode.index + 1),
                             style = TvBody,
                             color = Color(0xFFF2F3F7),
                             maxLines = 1,

@@ -1,7 +1,9 @@
 package com.moda.tv.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -15,9 +17,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.ui.input.key.Key
@@ -32,6 +36,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -41,6 +47,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.moda.tv.BuildConfig
 import com.moda.tv.R
 import com.moda.tv.ui.components.ActionButton
+import com.moda.tv.ui.components.TvFirstFocus
 import com.moda.tv.ui.theme.ModaColors
 import com.moda.tv.ui.theme.TvBody
 import com.moda.tv.ui.theme.TvCaption
@@ -79,9 +86,10 @@ fun CopyrightNoticeDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
         // 遥控器没有鼠标，弹窗一出现焦点必须已经在按钮上，
-        // 否则「确认」这个唯一出口要点两下才生效
+        // 否则「确认」这个唯一出口要点两下才生效。
+        // 抢焦点统一走 TvFirstFocus：等两帧再抢、失败不抛，不在各弹窗里手写重试。
         val confirmFocus = remember { FocusRequester() }
-        LaunchedEffect(Unit) { runCatching { confirmFocus.requestFocus() } }
+        TvFirstFocus(confirmFocus)
 
         // 尺寸必须跟着屏幕走：电视横屏高度常常只有 400~1080dp，
         // 写死宽高会让弹窗在矮屏上被窗口裁掉，标题和按钮直接看不见。
@@ -119,14 +127,27 @@ fun CopyrightNoticeDialog(
             val scope = rememberCoroutineScope()
             // 按键回调里不是组合上下文，dp→px 必须先在组合期算好
             val stepPx = with(LocalDensity.current) { 120.dp.toPx() }
+            // 正文自己能聚焦（电视上没有滚动条，不聚焦就读不到底），但 focusable 自己不画焦点：
+            // 原先按「上」把焦点移到正文时屏幕上没有任何白框，用户不知道键已经被正文吃走了。
+            // 补一圈 3dp 白描边（R1：不用 scale 表达焦点）；描边挂在滚动容器**之外**，
+            // 不跟着内容一起滚。
+            var bodyFocused by remember { mutableStateOf(false) }
             Column(
                 Modifier
                     .fillMaxWidth()
                     .heightIn(max = bodyMaxHeight)
+                    .border(
+                        width = 3.dp,
+                        color = if (bodyFocused) ModaColors.Focus else Color.Transparent,
+                        shape = RoundedCornerShape(8.dp),
+                    )
+                    // 描边画在边界内侧，正文与它之间留 4dp，白框不会压住首末行的字
+                    .padding(horizontal = 4.dp, vertical = 2.dp)
                     .verticalScroll(bodyScroll)
                     // 电视上没有滚动条：正文必须自己可聚焦、自己吃上下键，否则这屏文字永远读不到底
                     // （焦点只在"我已知悉"上，按上下键什么也不会发生）
                     .focusable()
+                    .onFocusChanged { bodyFocused = it.isFocused }
                     .onPreviewKeyEvent { ev ->
                         if (ev.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                         // 只有"还能滚"时才吃键：到底之后必须把上下键交还给焦点系统，
@@ -160,13 +181,19 @@ fun CopyrightNoticeDialog(
 
             // 正文被高度上限截断时必须说出来：电视上没有滚动条，用户只会以为"就这些"，
             // 而版权声明恰恰是要求用户真的读过一遍才点"我已知悉"的。
-            if (bodyScroll.canScrollForward) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    stringResource(R.string.copyright_scroll_hint),
-                    style = TvCaption.copy(fontSize = 14.sp),
-                    color = ModaColors.TextDim,
-                )
+            //
+            // 这一行常驻占位、高度固定：原先它整体挂在 canScrollForward 上，
+            // 滚到底的那一帧它就离开组合，下面的「我已知悉」整行往上跳一截
+            //（焦点框跟着位移，用户以为自己按错了）。现在只让文案消失，按钮不再动。
+            Spacer(Modifier.height(8.dp))
+            Box(Modifier.fillMaxWidth().height(22.dp)) {
+                if (bodyScroll.canScrollForward) {
+                    Text(
+                        stringResource(R.string.copyright_scroll_hint),
+                        style = TvCaption.copy(fontSize = 14.sp),
+                        color = ModaColors.TextDim,
+                    )
+                }
             }
 
             Spacer(Modifier.height(20.dp))

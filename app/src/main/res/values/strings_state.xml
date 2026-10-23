@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ==================== 状态层（TvViewModel）上屏文案 ====================
+         只放「会显示在屏幕上」的句子；日志与内部异常文本不翻译（排错时中文更好认）。
+         键名两侧（values / values-en）必须完全一致，参数用 %1$d / %1$s 占位。 -->
+
+    <!-- 整页刷新提示（HomeRefreshNotice.messageRes） -->
+    <string name="state_refresh_done">刷新完成</string>
+    <string name="state_refresh_failed_kept">刷新失败，已保留原有内容</string>
+
+    <!-- 集数标签兜底：元数据缺失时 label 会退化成 vid，只能自己拼一句 -->
+    <string name="state_episode_index">第 %1$d 集</string>
+
+    <!-- 代理网址保存失败（SaveOutcome.Fail.reason）。这条 reason 同时会进手机端
+         局域网页面，所以它必须是完整的人话，不能是错误码。 -->
+    <string name="state_settings_url_format">地址格式不对：必须以 http:// 或 https:// 开头，且包含主机名</string>
+    <string name="state_settings_url_unreachable">地址不可用：%1$s</string>
+    <string name="state_settings_save_failed">保存失败：%1$s</string>
+    <string name="state_settings_storage_unwritable">本地存储不可写</string>
+</resources>

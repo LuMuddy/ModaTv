@@ -192,9 +192,8 @@ minSdk 23 覆盖大多数电视盒子；Android TV / Google TV 模拟器可直�
 AGENTS.md                         编码与协作的强制约定（分层、按键、兜底、存储、提交）
 CONTRIBUTING.md                   提交信息规范（Conventional Commits + 钩子校验）
 
-app/src/main/assets/config.html   手机端扫码配置页（LanConfigServer 读取后填充占位符）
-app/src/main/res/values/strings.xml       界面文案，中文为默认语言
-app/src/main/res/values-en/strings.xml    同一批 key 的英文文案
+app/src/main/assets/index.html   手机端扫码配置页（LanConfigServer 读取后填充占位符）
+app/src/main/res/values/strings*.xml      界面文案，只有中文（界面语言固定中文，不跟随系统语言）
 
 app/src/main/java/com/moda/tv/
 ├── ModaApp.kt              Application：启动前同步注入持久化的代理网址
@@ -258,7 +257,7 @@ app/src/main/java/com/moda/tv/
 
 没有前台服务、没有常驻单例、没有延时回收——对象被丢弃即彻底消失。
 
-手机端页面本身是 `app/src/main/assets/config.html`，**可以直接用浏览器双击打开预览样式**：
+手机端页面本身是 `app/src/main/assets/index.html`，**可以直接用浏览器双击打开预览样式**：
 模板里的占位符要么写在 HTML 注释里、要么被一小段脚本清掉，直接打开不会看到 `__VALUE__` 这类字面量。
 
 它只有两个占位符，`LanConfigServer.pageHtml` 负责替换：

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ==================== OSD 槽位短标签（遥控器扫读，越短越好） ==================== -->
+    <string name="player_auto">自动</string>
+    <string name="player_quality">清晰度</string>
+    <string name="player_episodes">选集</string>
+    <string name="player_speed">倍速</string>
+    <string name="player_danmaku">弹幕</string>
+    <string name="player_aspect">比例</string>
+    <string name="player_intro">片头</string>
+    <string name="player_outro">片尾</string>
+
+    <!-- ==================== 清晰度面板 ==================== -->
+    <string name="player_no_quality">暂无可用清晰度</string>
+    <string name="player_unavailable">不可用</string>
+    <!-- 不可用档按下确认键的回执：档位名是上游数据，只有这句外壳是本地的 -->
+    <string name="player_tier_unavailable_hint">「%1$s」当前不可用，请换一个档位</string>
+
+    <!-- ==================== 错误面板与瞬时回执 ==================== -->
+    <string name="player_play_failed">播放失败</string>
+    <string name="player_retry">重 试</string>
+    <string name="player_retrying">重试中…</string>
+    <string name="player_error_hint">按确认键重试，按返回键退出</string>
+    <string name="player_seek_seconds">%1$d 秒</string>
+    <string name="player_hls_fallback">已回退到 HLS 流</string>
+
+    <!-- ==================== 选集面板 ==================== -->
+    <string name="player_episode_panel_title">选集 · 共 %1$d 集</string>
+    <string name="player_episode_number">第 %1$d 集</string>
+
+    <!-- ==================== 弹幕面板 ==================== -->
+    <string name="player_danmaku_title">弹幕设置</string>
+    <string name="player_danmaku_enabled">弹幕开关</string>
+    <string name="player_danmaku_size">字号</string>
+    <string name="player_danmaku_region">位置</string>
+    <string name="player_danmaku_top_margin">上边距</string>
+    <string name="player_danmaku_bottom_margin">下边距</string>
+
+    <!-- ==================== 倍速 / 比例 / 内核 / 解码面板 ==================== -->
+    <string name="player_aspect_title">画面比例</string>
+    <!-- 倍速与比例两块档位条共用同一句操作说明：左右换值、上下离开、都是即改即生效 -->
+    <string name="player_panel_hint_lr">左右键切换，上下键离开；立即生效</string>
+    <string name="player_core_title">播放内核</string>
+    <string name="player_core_ijk_missing">本机没有 IJK 原生库（只打包 arm64-v8a / armeabi-v7a），选 IJK 实际仍按 ExoPlayer 播放</string>
+    <string name="player_core_footnote">左右键切换，上下键离开；只记在本剧，选回与设置页相同即跟随默认</string>
+    <string name="player_decoder_title">解码方式</string>
+    <string name="player_decoder_footnote">硬解省电、4K 更稳；软解兼容性更好。只记在本剧，选回默认即跟随设置页</string>
+</resources>

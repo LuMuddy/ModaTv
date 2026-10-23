@@ -82,6 +82,19 @@ ui/*Screen.kt ──▶ TvViewModel ──▶ Repo ──▶ Api / CarouselSourc
   `i++` 旁边不需要。
 - 踩过的坑要留在注释里（例如「用布尔 key 的 LaunchedEffect 会导致焦点永久留在工具栏」）。
 
+## 界面文案
+
+- 所有会显示在屏幕上的文案**一律走 string 资源**（`res/values/strings_*.xml`，一个页面/模块一个文件、
+  键名带前缀），代码里不许出现中文字面量。**只有日志与内部异常可以写中文**——它们不上屏，中文便于排错。
+- **只有中文资源，没有 `values-en`**：界面语言固定为中文，不跟随系统语言。
+  `values/` 就是默认资源，任何语言环境下都会取到它。不要为了「顺便支持英文」再加 `values-en`——
+  那会让设置页在英文系统上独自变英文，与其它页面混排（这个坑踩过一次）。
+- 错误文案只有一条路：数据层（`Repo` / `Api` / `PlayerEngine`）只抛 `AppError` / `PlayerError`，
+  唯一翻译点是 `ui/components/ErrorText.kt`（`appErrorText` / `playerErrorText`）。
+  不许在数据层拼中文，也不许在 UI 各处再写一份错误码映射。
+- 枚举里要显示给用户的名字用 `@StringRes val xxxRes: Int`（如 `HomeTab.titleRes`），不存中文字符串。
+- 带参数的文案用占位符（`%1$d` / `%1$s`），不要把数字拼进句子再上屏。
+
 ## 提交与验证
 
 - 提交信息遵循 Conventional Commits，scope 见 CONTRIBUTING.md 的登记表：

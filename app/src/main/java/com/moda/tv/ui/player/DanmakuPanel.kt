@@ -1,5 +1,6 @@
 package com.moda.tv.ui.player
 
+import androidx.annotation.StringRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -20,6 +21,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.moda.tv.R
 import com.moda.tv.data.local.DanmakuRegion
 import com.moda.tv.data.local.DanmakuRegions
 import com.moda.tv.data.local.DanmakuSizeOptions
@@ -27,17 +29,16 @@ import com.moda.tv.data.local.MarginCombinedMaxPercent
 import com.moda.tv.data.local.MarginMaxPercent
 import com.moda.tv.data.local.MarginStepPercent
 import com.moda.tv.data.local.PlayerSettings
-import com.moda.tv.ui.theme.ModaColors
 import com.moda.tv.ui.theme.TvBody
 import com.moda.tv.ui.theme.TvCaption
 
 /** 弹幕面板里可上下切换的子项，顺序即遥控器上下移动顺序；确认键改当前项的值 */
-enum class DanmakuItem(val label: String) {
-    Enabled("弹幕开关"),
-    Size("字号"),
-    Region("位置"),
-    TopMargin("上边距"),
-    BottomMargin("下边距"),
+enum class DanmakuItem(@param:StringRes val labelRes: Int) {
+    Enabled(R.string.player_danmaku_enabled),
+    Size(R.string.player_danmaku_size),
+    Region(R.string.player_danmaku_region),
+    TopMargin(R.string.player_danmaku_top_margin),
+    BottomMargin(R.string.player_danmaku_bottom_margin),
 }
 
 val DanmakuItems: List<DanmakuItem> = DanmakuItem.entries
@@ -54,29 +55,28 @@ fun DanmakuPanel(settings: PlayerSettings, focusedItem: Int) {
             .padding(horizontal = 18.dp, vertical = 12.dp)
             .width(620.dp)
     ) {
-        Text("弹幕设置", style = TvCaption)
+        Text(stringResource(R.string.player_danmaku_title), style = TvCaption)
         Spacer(Modifier.height(6.dp))
         DanmakuItems.forEachIndexed { index, item ->
-            val focused = index == focusedItem
+            // 与其它面板共用 chipStyle：这一行只是"纵向列表里的一个可选项"，
+            // 之前写成一整块纯白铺满、连描边都没有，
+            // 焦点语言和旁边三块档位条对不上，看起来像另一套 UI。
+            // 弹幕面板没有"选中即生效"的档位——每一行的值就在右边文本里，
+            // 所以 selected 恒为 false，只用焦点态（3dp 白描边 + 提亮底）。
+            val cs = chipStyle(focused = index == focusedItem, selected = false)
+            val rowShape = RoundedCornerShape(8.dp)
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(if (focused) ModaColors.Focus else Color(0x00000000))
+                    .clip(rowShape)
+                    .background(cs.container)
+                    .border(cs.borderWidth, cs.border, rowShape)
                     .padding(horizontal = 12.dp, vertical = 5.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text(
-                    item.label,
-                    style = TvBody,
-                    color = if (focused) Color(0xFF0B0B0F) else ModaColors.TextDim,
-                )
-                Text(
-                    danmakuItemValue(item, settings),
-                    style = TvBody,
-                    color = if (focused) Color(0xFF0B0B0F) else ModaColors.Text,
-                )
+                Text(stringResource(item.labelRes), style = TvBody, color = cs.content)
+                Text(danmakuItemValue(item, settings), style = TvBody, color = cs.content)
             }
             Spacer(Modifier.height(4.dp))
         }
@@ -88,7 +88,9 @@ fun DanmakuPanel(settings: PlayerSettings, focusedItem: Int) {
 
 @Composable
 private fun danmakuItemValue(item: DanmakuItem, settings: PlayerSettings): String = when (item) {
-    DanmakuItem.Enabled -> if (settings.danmakuEnabled) "开" else "关"
+    DanmakuItem.Enabled -> stringResource(
+        if (settings.danmakuEnabled) R.string.common_on else R.string.common_off
+    )
     DanmakuItem.Size -> stringResource(settings.sizeLabelRes)
     DanmakuItem.Region -> stringResource(settings.danmakuRegion.labelRes)
     DanmakuItem.TopMargin -> (settings.topRatio * 100).toInt().toString() + "%"

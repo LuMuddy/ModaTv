@@ -16,10 +16,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.moda.tv.R
 import com.moda.tv.data.local.PlayerSpeedOptions
-import com.moda.tv.ui.theme.ModaColors
-import com.moda.tv.ui.theme.TvBody
 import com.moda.tv.ui.theme.TvCaption
 
 /**
@@ -36,7 +36,7 @@ fun SpeedPanel(speed: Float, focusedIndex: Int) {
             .border(1.dp, Color(0x33FFFFFF), shape)
             .padding(horizontal = 18.dp, vertical = 14.dp)
     ) {
-        Text("倍速", style = TvCaption)
+        Text(stringResource(R.string.player_speed), style = TvCaption)
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             PlayerSpeedOptions.forEachIndexed { index, option ->
@@ -51,12 +51,14 @@ fun SpeedPanel(speed: Float, focusedIndex: Int) {
                         .border(cs.borderWidth, cs.border, chipShape)
                         .padding(horizontal = 14.dp, vertical = 8.dp)
                 ) {
-                    Text(option.label, style = TvBody, color = cs.content)
+                    // 焦点（白框）与生效值（✓）是两个独立信号：左右键选中即生效，
+                    // 所以它们总是落在同一格上，只有同时画出来才不会互相吞掉
+                    ChipLabel(option.label, cs, current)
                 }
                 Spacer(Modifier.width(8.dp))
             }
         }
         Spacer(Modifier.height(6.dp))
-        Text("左右键切换，上下键离开；立即生效", style = TvCaption)
+        Text(stringResource(R.string.player_panel_hint_lr), style = TvCaption)
     }
 }

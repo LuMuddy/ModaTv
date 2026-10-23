@@ -19,9 +19,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.moda.tv.R
 import com.moda.tv.data.local.DecoderMode
 import com.moda.tv.data.local.PlayerCore
-import com.moda.tv.ui.theme.TvBody
 import com.moda.tv.ui.theme.TvCaption
 
 /**
@@ -52,8 +52,9 @@ private fun ChoicePanel(
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             labels.forEachIndexed { index, label ->
-                // 统一三态配色：焦点白底深字 / 选中蓝底白字 / 其余半透明
-                val cs = chipStyle(focused = index == focusedIndex, selected = index == currentIndex)
+                // 统一三态配色：焦点=3dp 白描边+提亮底 / 选中=蓝底+勾标 / 其余半透明
+                val current = index == currentIndex
+                val cs = chipStyle(focused = index == focusedIndex, selected = current)
                 val chipShape = RoundedCornerShape(8.dp)
                 Box(
                     Modifier
@@ -62,7 +63,9 @@ private fun ChoicePanel(
                         .border(cs.borderWidth, cs.border, chipShape)
                         .padding(horizontal = 14.dp, vertical = 8.dp)
                 ) {
-                    Text(label, style = TvBody, color = cs.content)
+                    // 这里两态真的会分开：IJK 缺 so 时焦点停在"用户选的 IJK"上，
+                    // 而实际跑的是 Exo——不把焦点和生效画成两套就分辨不出「选了但没生效」
+                    ChipLabel(label, cs, current)
                 }
                 Spacer(Modifier.width(8.dp))
             }
@@ -79,7 +82,7 @@ private fun ChoicePanel(
 @Composable
 fun CorePanel(playingCore: PlayerCore, focusedIndex: Int, ijkUsable: Boolean) {
     ChoicePanel(
-        title = "播放内核",
+        title = stringResource(R.string.player_core_title),
         labels = PlayerCore.entries.map { stringResource(it.labelRes) },
         currentIndex = PlayerCore.entries.indexOf(playingCore),
         focusedIndex = focusedIndex,
@@ -88,20 +91,20 @@ fun CorePanel(playingCore: PlayerCore, focusedIndex: Int, ijkUsable: Boolean) {
         note = if (ijkUsable) {
             null
         } else {
-            "本机没有 IJK 原生库（只打包 arm64-v8a / armeabi-v7a），选 IJK 实际仍按 ExoPlayer 播放"
+            stringResource(R.string.player_core_ijk_missing)
         },
-        footnote = "左右键切换，上下键离开；只记在本剧，选回与设置页相同即跟随默认",
+        footnote = stringResource(R.string.player_core_footnote),
     )
 }
 
 @Composable
 fun DecoderPanel(mode: DecoderMode, focusedIndex: Int) {
     ChoicePanel(
-        title = "解码方式",
+        title = stringResource(R.string.player_decoder_title),
         labels = DecoderMode.entries.map { stringResource(it.labelRes) },
         currentIndex = DecoderMode.entries.indexOf(mode),
         focusedIndex = focusedIndex,
         note = null,
-        footnote = "硬解省电、4K 更稳；软解兼容性更好。只记在本剧，选回默认即跟随设置页",
+        footnote = stringResource(R.string.player_decoder_footnote),
     )
 }
