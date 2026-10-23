@@ -20,19 +20,46 @@ import kotlinx.coroutines.withContext
  * `/x/cover/<cid>` 链接里——和首页轮播是同一套稳定可解析的结构。
  *
  * 抓取/补全的实现全部复用 [CarouselSource]：不复制第二份 OkHttp 客户端、
- * 也不复制 UA 与正则。这里只负责「频道 → 行」的编排与失败回退。
+ * 也不复制 UA 与正则。这里只负责「频道 → 行」的编排与失败落地（失败即空表）。
  */
 object ChannelSource {
 
     private const val TAG = "ChannelSource"
 
-    /** 一个频道 = 一行。顺序即首页行序，固定不变，不要排序 */
-    enum class Channel(val title: String, val url: String, val fallbackWord: String) {
-        /** [fallbackWord] 是频道页抓不到时回退到的搜索词，也是原 HOME_WORDS 的成员 */
-        TV("电视剧", "https://v.qq.com/channel/tv", "电视剧"),
-        MOVIE("电影", "https://v.qq.com/channel/movie", "电影"),
-        VARIETY("综艺", "https://v.qq.com/channel/variety", "综艺"),
-        CARTOON("动漫", "https://v.qq.com/channel/cartoon", "动漫"),
+    /**
+     * v.qq.com 的真实频道，一个频道 = 一行。顺序即首页行序，与站点导航栏一致，固定不变，不要排序。
+     *
+     * 每个 URL 都用 curl 实测过 HTTP 200 且能解析出 /x/cover 推荐位，斜杠后注释里标注了实测条数。
+     * 条数是「这一页当前暴露的推荐位数量」，不是总库容——频道页没有可解析的分页结构，
+     * /channel/xxx?page=2 实测返回的仍是同一批内容，所以这就是抓取上限。
+     */
+    enum class Channel(val title: String, val url: String) {
+        TV("电视剧", "https://v.qq.com/channel/tv"),                    // 15
+        MOVIE("电影", "https://v.qq.com/channel/movie"),                // 12
+        VARIETY("综艺", "https://v.qq.com/channel/variety"),            // 17
+        CARTOON("动漫", "https://v.qq.com/channel/cartoon"),            // 11
+        /**
+         * 少儿。URL 是实测选出来的：/channel/child 返回 200 且有 15 个推荐位；
+         * children / kids / boomerang 全是 302 跳转，抓不到内容。
+         */
+        CHILD("少儿", "https://v.qq.com/channel/child"),                // 15
+        DOCO("纪录片", "https://v.qq.com/channel/doco"),                // 11
+        /** 精选页的内容与首页推荐位完全重合（实测 14 条全部命中） */
+        CHOICE("精选", "https://v.qq.com/channel/choice"),              // 14
+        MUSIC("音乐", "https://v.qq.com/channel/music"),                // 8
+        SPORTS("体育", "https://v.qq.com/channel/sports_new"),          // 7
+        NBA("NBA", "https://v.qq.com/channel/nba"),                     // 5
+        GAME("游戏", "https://v.qq.com/channel/game_new"),              // 9
+        AUTO("汽车", "https://v.qq.com/channel/auto"),                  // 4
+        FASHION("时尚", "https://v.qq.com/channel/fashion"),            // 3
+        LIFE("生活", "https://v.qq.com/channel/life"),                  // 9
+        ART("艺术", "https://v.qq.com/channel/art"),                    // 7
+        PET("萌宠", "https://v.qq.com/channel/pet_tv"),                 // 5
+        PODCAST("播客", "https://v.qq.com/channel/podcast"),            // 8
+        FREE_LIST("免费", "https://v.qq.com/channel/free_list_channel"),// 5
+        // 实测为 0 推荐位的三个频道（tech 科技 / mini_series 短剧 / mid_video 中视频）
+        // 已经删掉：页面虽然能开，但解析不出任何 /x/cover，做进 tab 就是一个点了必然白屏的死入口。
+        // 腾讯哪天补上推荐位，再把它们加回来——那时也应当先实测条数再决定。
     }
 
     /**
@@ -42,9 +69,9 @@ object ChannelSource {
     private const val ROW_CIDS = 18
 
     /**
-     * 整页补全的并发上限。eps 是重接口（一次回整部剧的 vids），60 个 cid 同时打后端
+     * 整页补全的并发上限。eps 是重接口（一次回整部剧的 vids），上百个 cid 同时打后端
      * 会明显拖慢首屏甚至被限流；4 路实测能在几秒内补完整个首页。
-     * 注意这是「整页」共享的信号量，不是每频道各 4 路——否则四行叠起来就是 16 路。
+     * 注意这是「整页」共享的信号量，不是每频道各 4 路——否则 19 个频道叠起来就是 76 路。
      */
     private const val PARALLEL = 4
 
@@ -53,10 +80,11 @@ object ChannelSource {
 
     /**
      * 抓全部频道。整体不抛异常：单个频道失败只让该行的 [Row.items] 为空，
-     * 调用方（Repo.homeRows）据此把该行回退到搜索方案。
+     * 调用方（Repo.homeFeed）据此返回空表——**没有**搜索兜底，缺内容由
+     * ViewModel 的持久化缓存顶上。
      */
     suspend fun loadAll(): List<Row> = coroutineScope {
-        // 抓 HTML 和补全 meta 用同一个整页信号量：抓 4 个频道页 + 补 60 个 cid
+        // 抓 HTML 和补全 meta 用同一个整页信号量：抓 19 个频道页 + 补上百个 cid
         // 全部排在 4 个许可后面，任何时刻对外的并发请求数都不会超过 PARALLEL
         val sem = Semaphore(PARALLEL)
         val rows = Channel.entries.map { ch ->

@@ -1,5 +1,6 @@
 package com.moda.tv.data
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
 import com.google.zxing.BarcodeFormat
@@ -15,7 +16,6 @@ import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URLDecoder
-import java.security.SecureRandom
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -28,17 +28,15 @@ import kotlinx.coroutines.launch
  * 存在的唯一目的：让用户在手机浏览器里改「代理网址」，避免在电视遥控器上敲一条长 URL。
  *
  * 生命周期是本类最重要的约束，因此**不做任何常驻持有**：
- *   - [start] 由 Dialog 进入组合时调用（绑定 0.0.0.0，端口从 8088 起逐个试）；
+ *   - [start] 由 Dialog 进入组合时调用（绑定 0.0.0.0，端口从 9999 起逐个试）；
  *   - [stop]  由 Dialog 离开组合 / 设置页退出 / 应用进入后台时调用，
  *             close() 掉 ServerSocket 并把协程作用域 cancel 掉，端口立即归还系统。
  * 没有前台服务、没有静态单例、没有延时回收——对象被丢弃即彻底消失。
  *
- * 安全边界与用户要求一致：只有 Dialog 打开期间端口才在监听，
- * 且所有路由都校验 Dialog 打开时生成的一次性 token，缺失或不匹配一律 403。
+ * 安全边界：只有 Dialog 打开期间端口才在监听，关掉即完全无法访问。
+ * 不做 token 校验——能连上（局域网内）就允许改，端口不监听时外部根本无从下手。
  */
 class LanConfigServer(
-    /** Dialog 打开时生成的一次性 token；只活在这一个 Server 实例里 */
-    private val token: String,
     /** 读取当前生效的代理网址，用于预填网页输入框 */
     private val currentBase: () -> String,
     /**
@@ -49,6 +47,11 @@ class LanConfigServer(
     private val save: suspend (String) -> SaveOutcome,
     /** 保存成功回调（IO 线程），供电视端 Dialog 实时刷新 */
     private val onSaved: (String) -> Unit,
+    /**
+     * 手机端页面模板，来自 assets/config.html（见 [loadPageTemplate]）。
+     * 页面文本不在本类里，改样式/文案只改那个文件，Kotlin 侧不动。
+     */
+    private val pageTemplate: String,
 ) {
 
     @Volatile
@@ -88,7 +91,7 @@ class LanConfigServer(
         acceptScope = null
     }
 
-    /** 8088 起找 20 个端口；全部占用就返回 null（Dialog 会提示无法开启服务） */
+    /** 9999 起找 20 个端口；全部占用就返回 null（Dialog 会提示无法开启服务） */
     private fun bindAnyPort(): ServerSocket? {
         for (offset in 0 until PORT_TRY_COUNT) {
             val candidate = PREFERRED_PORT + offset
@@ -135,12 +138,6 @@ class LanConfigServer(
     }
 
     private suspend fun route(request: HttpRequest, output: OutputStream) {
-        // 一次性 token 是唯一的身份凭据：缺失或不匹配一律 403
-        if (request.query["t"].orEmpty() != token) {
-            respond(output, 403, TEXT_TYPE, "403 Forbidden：token 无效或已过期，请重新扫描电视上的二维码")
-            return
-        }
-
         when {
             request.method == "GET" && (request.path == "/" || request.path == "/index.html") -> {
                 respond(output, 200, HTML_TYPE, pageHtml(current = currentBase(), error = null, saved = null))
@@ -172,7 +169,6 @@ class LanConfigServer(
     private data class HttpRequest(
         val method: String,
         val path: String,
-        val query: Map<String, String>,
         val form: Map<String, String>,
     )
 
@@ -184,8 +180,8 @@ class LanConfigServer(
         if (parts.size < 2) return null
         val method = parts[0].uppercase()
         val target = parts[1]
+        // 路由只看路径：没有 token，query 一律忽略
         val rawPath = target.substringBefore('?')
-        val queryString = target.substringAfter('?', "")
         val headers = HashMap<String, String>()
         for (i in 1 until lines.size) {
             val idx = lines[i].indexOf(':')
@@ -206,7 +202,7 @@ class LanConfigServer(
         } else {
             ""
         }
-        return HttpRequest(method, rawPath, parsePairs(queryString), parsePairs(body))
+        return HttpRequest(method, rawPath, parsePairs(body))
     }
 
     /** 逐字节读到空行为止；返回请求行 + 头部原文 */
@@ -245,7 +241,7 @@ class LanConfigServer(
             append("HTTP/1.1 ").append(code).append(' ').append(statusText(code)).append("\r\n")
             append("Content-Type: ").append(contentType).append("\r\n")
             append("Content-Length: ").append(bytes.size).append("\r\n")
-            // 手机浏览器不缓存这张页面：否则关闭 Dialog 再打开时会看到上一轮的 token
+            // 手机浏览器不缓存这张页面：每次打开都该看到电视上当前生效的地址
             append("Cache-Control: no-store\r\n")
             append("Connection: close\r\n\r\n")
         }
@@ -257,12 +253,11 @@ class LanConfigServer(
     private fun statusText(code: Int): String = when (code) {
         200 -> "OK"
         400 -> "Bad Request"
-        403 -> "Forbidden"
         404 -> "Not Found"
         else -> "OK"
     }
 
-    // ---------------- 手机端页面（内联 CSS/JS，不依赖任何外部资源）----------------
+    // ---------------- 手机端页面（模板来自 assets/config.html）----------------
 
     private fun pageHtml(current: String, error: String?, saved: String?): String {
         val value = htmlEscape(saved ?: current)
@@ -271,43 +266,10 @@ class LanConfigServer(
             error != null -> "<div class=\"err\">" + htmlEscape(error) + "</div>"
             else -> ""
         }
-        val action = "/save?t=" + token
-        return """<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ModaTV 代理网址</title>
-<style>
-*{box-sizing:border-box}
-body{margin:0;padding:24px;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;background:#0b0b0f;color:#f2f3f7}
-h1{font-size:20px;margin:0 0 6px}
-p.hint{font-size:14px;line-height:1.6;color:#9aa0ae;margin:0 0 18px}
-label{display:block;font-size:14px;color:#9aa0ae;margin-bottom:8px}
-input{width:100%;padding:14px;font-size:16px;border-radius:10px;border:2px solid #2a2f3a;background:#15161c;color:#f2f3f7;outline:none}
-input:focus{border-color:#2a5fd6}
-button{width:100%;margin-top:16px;padding:15px;font-size:17px;border:0;border-radius:10px;background:#2a5fd6;color:#fff;font-weight:600}
-button:active{background:#3568de}
-.ok{margin-bottom:16px;padding:14px;border-radius:10px;background:#12351f;color:#7ee2a8;font-size:15px}
-.err{margin-bottom:16px;padding:14px;border-radius:10px;background:#3a1616;color:#ff9d9d;font-size:15px;line-height:1.5;word-break:break-all}
-.tip{margin-top:18px;font-size:12px;color:#6b7280;line-height:1.6}
-</style>
-</head>
-<body>
-<h1>ModaTV 代理网址</h1>
-<p class="hint">在下面填写代理地址的完整 URL，提交后电视端立即生效。</p>
-__BANNER__
-<form method="POST" action="__ACTION__">
-  <label for="url">代理网址</label>
-  <input id="url" name="url" type="text" inputmode="url" autocomplete="off" spellcheck="false" value="__VALUE__" placeholder="https://proxy.example.com">
-  <button type="submit">提交并验证</button>
-</form>
-<p class="tip">必须以 http:// 或 https:// 开头。提交后会先用该地址做一次探活，不通则不保存。</p>
-</body>
-</html>"""
-            .replace("__BANNER__", banner)
-            .replace("__ACTION__", action)
-            .replace("__VALUE__", value)
+        // 占位符替换是字面量替换：value 已做过 HTML 转义，不会被当模板解释
+        return pageTemplate
+            .replace(PLACEHOLDER_BANNER, banner)
+            .replace(PLACEHOLDER_VALUE, value)
     }
 
     private fun htmlEscape(s: String): String = buildString(s.length + 16) {
@@ -323,16 +285,43 @@ __BANNER__
         }
     }
 
-    private companion object {
-        const val PREFERRED_PORT = 8088
-        const val PORT_TRY_COUNT = 20
-        const val BACKLOG = 8
-        const val SOCKET_TIMEOUT_MS = 15_000
-        const val MAX_HEAD = 8 * 1024
-        const val MAX_BODY = 8 * 1024
-        const val HTML_TYPE = "text/html; charset=utf-8"
-        const val TEXT_TYPE = "text/plain; charset=utf-8"
-        const val BANNER_OK = "<div class=\"ok\">已生效，可以关闭此页面</div>"
+    companion object {
+        /** assets 下的页面模板文件名 */
+        private const val PAGE_ASSET = "config.html"
+
+        /**
+         * 读取 assets/config.html 作为手机端页面模板。
+         *
+         * 读失败（资源被裁掉、包体异常）时退回 [FALLBACK_PAGE]：
+         * 配置页是唯一的改地址入口，宁可少样式也不能给一张白页。
+         */
+        fun loadPageTemplate(context: Context): String = try {
+            context.assets.open(PAGE_ASSET).bufferedReader(Charsets.UTF_8).use { it.readText() }
+        } catch (e: Exception) {
+            FALLBACK_PAGE
+        }
+
+        private const val PREFERRED_PORT = 9999
+        private const val PORT_TRY_COUNT = 20
+        private const val BACKLOG = 8
+        private const val SOCKET_TIMEOUT_MS = 15_000
+        private const val MAX_HEAD = 8 * 1024
+        private const val MAX_BODY = 8 * 1024
+        private const val HTML_TYPE = "text/html; charset=utf-8"
+        private const val TEXT_TYPE = "text/plain; charset=utf-8"
+        private const val BANNER_OK = "<div class=\"ok\">已生效，可以关闭此页面</div>"
+
+        /**
+         * assets/config.html 里的占位符；模板与替换两侧靠它对齐。
+         * 提示条写成 HTML 注释，这样单独用浏览器打开模板时不会看到它。
+         */
+        private const val PLACEHOLDER_BANNER = "<!--BANNER_SLOT-->"
+        private const val PLACEHOLDER_VALUE = "__VALUE__"
+
+        /** 资源缺失时的兜底：宁可让用户看到一句人话，也不要返回空白页 */
+        private const val FALLBACK_PAGE =
+            "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">" +
+                "<title>ModaTV</title></head><body>页面模板缺失，请在电视端手动修改代理网址。</body></html>"
     }
 }
 
@@ -342,7 +331,7 @@ sealed interface SaveOutcome {
     data class Fail(val reason: String) : SaveOutcome
 }
 
-/** 局域网地址 / token / 二维码三项与 HTTP 协议无关的杂活 */
+/** 局域网地址 / 二维码两项与 HTTP 协议无关的杂活 */
 object LanNet {
 
     /**
@@ -379,19 +368,6 @@ object LanNet {
         // 站点内网优先；同一档内保持枚举顺序（wlan0 通常先出现）
         val best = candidates.firstOrNull { it.isSiteLocalAddress } ?: candidates.firstOrNull()
         return best?.hostAddress
-    }
-
-    /** 一次性 token：Dialog 每次打开都换，关掉即作废 */
-    fun randomToken(): String {
-        val bytes = ByteArray(16)
-        SecureRandom().nextBytes(bytes)
-        val hex = "0123456789abcdef"
-        val sb = StringBuilder(32)
-        for (b in bytes) {
-            val v = b.toInt() and 0xFF
-            sb.append(hex[v shr 4]).append(hex[v and 0x0F])
-        }
-        return sb.toString()
     }
 
     /** 二维码位图：zxing core 只给 BitMatrix，转 Bitmap 是这里唯一的 Android 依赖 */

@@ -118,7 +118,16 @@ data class Danmaku(
     val size: Int = 1,
 )
 
-/** 播放记录 / 收藏共用条目 */
+/**
+ * 播放记录 / 收藏 / 已看完共用条目。
+ *
+ * [completed] 是「这一集已经看完」的标记，只有 [com.moda.tv.data.local.CompletedStore] 里的条目
+ * 会把它置 true（历史与收藏写进来的一律是默认 false）。
+ * 之所以放在条目上而不是另建一套数据结构：看完的那一集同时需要剧名、封面、时长，
+ * 这些字段与历史记录完全一致，复用同一份 [LibraryJson] 编解码就不必再维护第二套手写 JSON。
+ *
+ * 注意向后兼容：旧版本写出的 JSON 里没有这个字段，解析必须落成 false 而不是报错。
+ */
 data class LibraryEntry(
     val cid: String,
     val vid: String,
@@ -128,4 +137,5 @@ data class LibraryEntry(
     val positionMs: Long = 0,
     val durationMs: Long = 0,
     val updatedAt: Long = 0,
+    val completed: Boolean = false,
 )

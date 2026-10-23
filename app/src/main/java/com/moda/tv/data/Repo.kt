@@ -133,137 +133,130 @@ object Repo {
     }
 
     /**
-     * 搜索回退用的主题词。只在两种情况下用到：
-     * 1) 单个频道页抓不到 → 该行用对应的 ChannelSource.Channel.fallbackWord（同一个词）；
-     * 2) 四个频道页全部失败 → 整体回到这份原始列表，保证首页任何时候都不空。
+     * 推荐 tab 展示的条数。
+     *
+     * 实测 v.qq.com 首页只暴露 14 个推荐位（/channel/choice 精选页与它完全重合），
+     * 这就是推荐位的真实供给上限。写 20 是留余量——腾讯某天加位能自动吃进来，
+     * 但今天实际拿到的仍是 14 条。
      */
-    private val HOME_WORDS = listOf("热门", "电视剧", "电影", "动漫", "综艺")
-    private const val HOME_ROW_SIZE = 20
-
-    private data class RowsEntry(val rows: List<HomeRow>, val at: Long, val degraded: Boolean)
+    const val RECOMMEND_SIZE = 20
 
     /**
-     * 首页行缓存 10 分钟，与轮播同一口径：首页返回/刷新/切回都会重新拉行，
-     * 没必要每次都去抓 v.qq.com 的四个频道页 + 几十个 eps。
-     * 降级结果（有行走过搜索回退）只缓存 1 分钟：断网/改版恢复后下一次进首页就能自愈，
-     * 又不会在持续失败时被每次刷新反复拖慢。
+     * 首页每个 tab 的一屏数据。
+     *
+     * **首页的数据源有且只有 v.qq.com**：推荐 tab 走首页推荐位，其余 tab 走各自的频道页。
+     * 自研后端的 search 接口不参与首页——它搜的是「热门」「电视剧」这几个字本身，
+     * 拿到的只是标题里含该词的结果，既不是榜单也不是分类，混进首页就是把别处的数据
+     * 伪装成首页内容。这也意味着首页没有第 2 页：v.qq.com 的推荐位与频道页都没有
+     * 可解析的分页结构（/channel/xxx?page=2 实测返回同一批内容）。
+     *
+     * **这是首页唯一的取数入口**：19 个 tab 全部经由这里，没有第二套抓取逻辑——
+     * 两套并存的代价是「缓存优先」要写两遍，而两套里必然有一套先腐坏。
+     *
+     * 失败一律返回 emptyList（异常在下面各处已落地，绝不向 UI 抛）：
+     * 「抓不到」这件事由上层用持久化缓存顶上，Repo 不替它做决定。
      */
-    private const val ROWS_TTL_MS = 10 * 60_000L
-    private const val ROWS_MISS_TTL_MS = 60_000L
-
-    private val rowsCache = java.util.concurrent.atomic.AtomicReference<RowsEntry?>(null)
-
-    /** 与轮播同理：首屏与重试并发进来时只抓一次 */
-    private val rowsLock = Mutex()
-
-    private fun rowsTtl(degraded: Boolean) = if (degraded) ROWS_MISS_TTL_MS else ROWS_TTL_MS
-
-    private data class Built(val rows: List<HomeRow>, val degraded: Boolean)
+    suspend fun homeFeed(tab: HomeTab): List<VideoItem> = when (tab) {
+        HomeTab.Recommend -> recommendFeed()
+        else -> channelFeed(tab)
+    }
 
     /**
-     * 首页 4 行：电视剧 / 电影 / 综艺 / 动漫（顺序固定）。
+     * 推荐 tab：取官方首页推荐位的前 [RECOMMEND_SIZE] 条（需求 10：只显示 10 条）。
      *
-     * 内容来自 v.qq.com 官方频道页的真实分类推荐位，而不是「拿搜索词当推荐」——
-     * 后者搜「热门」实际只回 30 条标题含该词的结果，既不是榜单也不是分类。
-     *
-     * 三级回退，保证首页任何时候都不空：
-     *   单条 cid 补全失败 → 只跳过那一条（ChannelSource.enrich 里落地）；
-     *   单个频道页失败  → 该行走 Api.search(频道词)，标题与位置不变；
-     *   四个频道页全挂  → 整体回退到原 HOME_WORDS 搜索方案。
+     * 推荐位抓不到就返回空表，交由上层用持久化缓存顶上——**没有**搜索兜底。
+     * 首页只能有一个来源：[CarouselSource]。搜索热词不属于「首页推荐位」，
+     * 拿它顶上来，用户看到的是一屏搜「热门」的结果，而不是腾讯编辑的推荐。
      */
-    suspend fun homeRows(): List<HomeRow> {
-        val now = System.currentTimeMillis()
-        rowsCache.get()?.let { e ->
-            if (now - e.at <= rowsTtl(e.degraded)) return e.rows
-        }
-        return rowsLock.withLock {
-            // 等锁期间可能已被别人拉完，再查一次避免重复抓
-            val again = rowsCache.get()
-            if (again != null && System.currentTimeMillis() - again.at <= rowsTtl(again.degraded)) {
-                return@withLock again.rows
-            }
-            val built = try {
-                buildRows()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                // buildRows 内部已逐层兜底，这里是最后一道保险：绝不向 UI 抛
-                Log.w(TAG, "首页行构建异常：${e.message}")
-                null
-            }
-            // 连兜底的搜索方案都拿不到东西时不写缓存，让下次刷新立刻重试
-            val entry = built?.takeIf { it.rows.isNotEmpty() }
-                ?.let { RowsEntry(it.rows, System.currentTimeMillis(), it.degraded) }
-            if (entry != null) {
-                rowsCache.set(entry)
-                entry.rows
-            } else {
-                // 最后一层：过期缓存也照发。首页任何时候都不能空，宁可让用户看见
-                // 十分钟前的内容，也不要给他一屏骨架屏。
-                Log.w(TAG, "首页行构建完全失败，沿用过期缓存")
-                rowsCache.get()?.rows.orEmpty()
-            }
-        }
-    }
-
-    /** 频道页 → 4 行；逐行回退，最后整体回退 */
-    private suspend fun buildRows(): Built? {
-        val channels = try {
-            ChannelSource.loadAll()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w(TAG, "频道页加载异常：${e.message}")
-            emptyList()
-        }
-
-        // 一个频道页都没抓到（断网 / v.qq.com 改版）：整体回退到原 HOME_WORDS 搜索方案。
-        // 必须先判这一条——否则四行走的都是「单行回退」，整体方案永远走不到。
-        if (channels.none { it.items.isNotEmpty() }) {
-            Log.w(TAG, "全部频道页失败，整体回退到搜索方案")
-            val fallback = searchRows(HOME_WORDS)
-            return if (fallback.isEmpty()) null else Built(fallback, degraded = true)
-        }
-
-        // 有频道拿到了真实内容：逐行并行，没拿到的那一行单独回退搜索
-        val rows = coroutineScope {
-            channels.map { row ->
-                async {
-                    if (row.items.isNotEmpty()) {
-                        HomeRow(row.channel.title, row.items) to false
-                    } else {
-                        // 单行失败只丢这一行的真实内容：标题与位置照旧，内容换成搜索回退
-                        Log.w(
-                            TAG,
-                            "频道「${row.channel.title}」无内容，该行回退到搜索「${row.channel.fallbackWord}」"
-                        )
-                        HomeRow(row.channel.title, searchRow(row.channel.fallbackWord)) to true
-                    }
-                }
-            }.awaitAll()
-        }
-        // 只要有一行走过搜索回退，这个缓存周期就是降级态（短 TTL，早点自愈）
-        val degraded = rows.any { it.second }
-        val filled = rows.map { it.first }.filter { it.items.isNotEmpty() }
-        // 走到这里 channels 里至少有一行非空，filled 必然非空；保险起见仍按可能为空处理
-        return if (filled.isEmpty()) null else Built(filled, degraded)
-    }
-
-    /** 原方案：主题词逐个走搜索，单行失败只丢该行 */
-    private suspend fun searchRows(words: List<String>): List<HomeRow> = coroutineScope {
-        words.map { word ->
-            async { HomeRow(word, searchRow(word)) }
-        }.awaitAll()
-    }.filter { it.items.isNotEmpty() }
-
-    /** 单行搜索回退；失败返回空列表，由调用方决定丢行还是整体回退 */
-    private suspend fun searchRow(word: String): List<VideoItem> = try {
-        Api.search(word, 1, HOME_ROW_SIZE)
+    private suspend fun recommendFeed(): List<VideoItem> = try {
+        homeCarousel().take(RECOMMEND_SIZE)
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
-        Log.w(TAG, "首页行「$word」搜索回退失败：${e.message}")
+        Log.w(TAG, "推荐位失败：${e.message}")
         emptyList()
+    }
+
+    /** HomeTab → 频道页；Recommend 没有对应频道，返回 null */
+    private fun channelOf(tab: HomeTab): ChannelSource.Channel? = when (tab) {
+        HomeTab.Recommend -> null
+        HomeTab.Tv -> ChannelSource.Channel.TV
+        HomeTab.Movie -> ChannelSource.Channel.MOVIE
+        HomeTab.Variety -> ChannelSource.Channel.VARIETY
+        HomeTab.Cartoon -> ChannelSource.Channel.CARTOON
+        HomeTab.Child -> ChannelSource.Channel.CHILD
+        HomeTab.Doco -> ChannelSource.Channel.DOCO
+        HomeTab.Choice -> ChannelSource.Channel.CHOICE
+        HomeTab.Music -> ChannelSource.Channel.MUSIC
+        HomeTab.Sports -> ChannelSource.Channel.SPORTS
+        HomeTab.Nba -> ChannelSource.Channel.NBA
+        HomeTab.Game -> ChannelSource.Channel.GAME
+        HomeTab.Auto -> ChannelSource.Channel.AUTO
+        HomeTab.Fashion -> ChannelSource.Channel.FASHION
+        HomeTab.Life -> ChannelSource.Channel.LIFE
+        HomeTab.Art -> ChannelSource.Channel.ART
+        HomeTab.Pet -> ChannelSource.Channel.PET
+        HomeTab.Podcast -> ChannelSource.Channel.PODCAST
+        HomeTab.FreeList -> ChannelSource.Channel.FREE_LIST
+    }
+
+    /**
+     * 频道 tab：该频道在 v.qq.com 频道页上的真实分类推荐位。
+     *
+     * 频道页没有可解析的分页结构（/channel/xxx?page=2 实测返回同一批内容），
+     * 所以这里只给一屏；频道页挂了就是空表，由上层用持久化缓存顶上。
+     */
+    private suspend fun channelFeed(tab: HomeTab): List<VideoItem> {
+        val channel = channelOf(tab) ?: return emptyList()
+        return channelRows()[channel].orEmpty()
+    }
+
+    /**
+     * 整页全部频道页的抓取结果，成功缓存 10 分钟、全空只缓存 1 分钟（断网恢复后能自愈）。
+     *
+     * 缓存的是「整页所有频道」而不是单个频道：ChannelSource.loadAll 一次就把全部频道页
+     * 连同上百个 cid 的补全都做完了，按 tab 分别缓存等于把同一份工作做十九遍。
+     * 用户从「电视剧」切到「电影」时应当立刻有内容，而不是再等一次频道页抓取。
+     */
+    private const val CHANNEL_TTL_MS = 10 * 60_000L
+    private const val CHANNEL_MISS_TTL_MS = 60_000L
+
+    private data class ChannelEntry(
+        val rows: Map<ChannelSource.Channel, List<VideoItem>>,
+        val at: Long,
+    )
+
+    private val channelCache = java.util.concurrent.atomic.AtomicReference<ChannelEntry?>(null)
+
+    private val channelLock = Mutex()
+
+    private fun channelTtl(entry: ChannelEntry) =
+        if (entry.rows.values.all { it.isEmpty() }) CHANNEL_MISS_TTL_MS else CHANNEL_TTL_MS
+
+    private suspend fun channelRows(): Map<ChannelSource.Channel, List<VideoItem>> {
+        channelCache.get()?.let { e ->
+            if (System.currentTimeMillis() - e.at <= channelTtl(e)) return e.rows
+        }
+        return channelLock.withLock {
+            // 等锁期间可能已被别人拉完，再查一次避免重复抓
+            val again = channelCache.get()
+            if (again != null && System.currentTimeMillis() - again.at <= channelTtl(again)) {
+                return@withLock again.rows
+            }
+            val rows = try {
+                ChannelSource.loadAll()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // ChannelSource 内部已逐频道兜底，这里是最后一道保险
+                Log.w(TAG, "频道页加载异常：${e.message}")
+                emptyList()
+            }
+            val entry = ChannelEntry(rows.associate { it.channel to it.items }, System.currentTimeMillis())
+            // 一个频道都没拿到也照写缓存（走 60 秒的短 TTL），否则断网时每次切 tab 都要重抓一遍
+            channelCache.set(entry)
+            entry.rows
+        }
     }
 
     // ---------- 首页轮播 ----------
@@ -271,7 +264,7 @@ object Repo {
     private data class CarouselEntry(val items: List<VideoItem>, val at: Long)
 
     /**
-     * 轮播成功结果缓存 10 分钟：首页刷新/返回都会重新拉首页行，没必要每次都去敲 v.qq.com。
+     * 推荐位成功结果缓存 10 分钟：首页刷新/返回都会重新拉整页，没必要每次都去敲 v.qq.com。
      * 空结果只缓存 1 分钟——那样失败后下一次进首页还有机会自愈，
      * 但也不会在断网时被每次刷新反复拖慢。
      */
@@ -284,9 +277,9 @@ object Repo {
     private val carouselLock = Mutex()
 
     /**
-     * 首页轮播条目（v.qq.com 推荐位）。语义上等同"可能为空"：
-     * 抓取/解析/补全任一环节整体失败都返回 emptyList，调用方据此回退到旧的单条横幅。
-     * 这里不抛异常是契约的一部分——横幅挂了不能让整个首页报错。
+     * 首页推荐位条目（v.qq.com 首页）。语义上等同"可能为空"：
+     * 抓取/解析/补全任一环节整体失败都返回 emptyList，由 ViewModel 用持久化缓存顶上，
+     * 没有横幅回退这类第二来源。这里不抛异常是契约的一部分——抓不到不能让整个首页报错。
      */
     suspend fun homeCarousel(): List<VideoItem> {
         val now = System.currentTimeMillis()
@@ -314,6 +307,23 @@ object Repo {
             carouselCache.set(CarouselEntry(items, System.currentTimeMillis()))
             items
         }
+    }
+
+    /**
+     * 让下一次抓取真正打网络：把两张整页缓存置空即可。
+     *
+     * 为什么不给 [homeFeed] 加一个 force 参数：手动刷新是 19 个 tab 并发进来，
+     * 每个 tab 都带着 force 就会各自把 channelRows() 走到底，也就是并发打 19 次频道页。
+     * 整页缓存存在的意义正是「这 19 个 tab 共用同一份抓取结果」，force 参数恰好绕过了它。
+     * 置空之后：第一个进来的重新抓、其余在 [channelLock] 里排队，等锁释放后自然复用
+     * 它刚写回的缓存，整页仍然只抓一次——既刷新了数据，也没有把并发变成 19 倍流量。
+     *
+     * 只碰整页缓存。hlsByGuid / tierBlacklist / coverByCid 是播放与封面用的，
+     * 与「首页整页刷新」无关，清掉它们只会让用户白等一次重新解析。
+     */
+    fun invalidateHomeCache() {
+        channelCache.set(null)
+        carouselCache.set(null)
     }
 
     // ---------- 搜索热词 ----------

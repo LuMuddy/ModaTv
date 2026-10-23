@@ -89,10 +89,6 @@ object Api {
         return parseItems(j.optJSONArray("items") ?: JSONArray())
     }
 
-    /** 首页信息流：后端没有 feed action，用热门词走搜索接口（同 app.js §12 GetHotWords 思路） */
-    suspend fun hotWords(keyword: String, limit: Int = 40): List<VideoItem> =
-        search(keyword, 1, limit)
-
     suspend fun eps(cid: String): JSONObject = call("eps", JSONObject().put("cid", cid))
 
     suspend fun info(vid: String): JSONObject = call("info", JSONObject().put("vid", vid))
