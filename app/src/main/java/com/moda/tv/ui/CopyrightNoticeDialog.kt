@@ -23,11 +23,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.moda.tv.BuildConfig
+import com.moda.tv.R
 import com.moda.tv.ui.components.ActionButton
 import com.moda.tv.ui.theme.ModaColors
 import com.moda.tv.ui.theme.TvBody
@@ -35,18 +37,17 @@ import com.moda.tv.ui.theme.TvCaption
 import com.moda.tv.ui.theme.TvHeading
 
 /**
- * 版权声明正文。
+ * 版权声明正文（四个段落的字符串资源 id，顺序即展示顺序）。
  *
  * 独立成列表而不是一段长文本：电视上大段文字很难扫读，分条之后每条只表达一件事，
  * 用户扫一眼就能抓到「免费」「作者不管盗版」这两个要点。
- * 这里是全应用唯一的文案出处——启动弹窗和设置页入口共用，改一处两边同步。
+ * 这里存资源 id 而不是字符串：正文要跟系统语言走，启动弹窗与设置页入口共用同一份文案。
  */
-private val NoticeParagraphs: List<String> = listOf(
-    "ModaTv 是免费软件，任何人都可以免费下载、安装、使用，无需付费、无需激活码、无需注册。",
-    "作者不出售本软件，也不通过任何渠道收费。任何向你要钱的下载、代装、激活码，都不是作者所为。",
-    "如果使用的是盗版、被二次打包或被修改过的版本（例如捆绑广告、植入其他代码、替换图标与应用名），" +
-        "出现的一切问题都与作者无关。作者不承担任何责任，也不提供任何形式的技术支持或售后。",
-    "软件按「现状」提供，不作任何明示或暗示的担保。使用本软件即表示你已知悉并接受本声明。",
+private val NoticeParagraphs: List<Int> = listOf(
+    R.string.copyright_paragraph_1,
+    R.string.copyright_paragraph_2,
+    R.string.copyright_paragraph_3,
+    R.string.copyright_paragraph_4,
 )
 
 /**
@@ -89,13 +90,14 @@ fun CopyrightNoticeDialog(
                 .padding(horizontal = 44.dp, vertical = 34.dp),
         ) {
             Text(
-                "版权声明",
+                stringResource(R.string.copyright_title),
                 style = TvHeading.copy(fontSize = 32.sp),
                 color = ModaColors.Text,
             )
             Spacer(Modifier.height(6.dp))
             Text(
-                "当前版本 v$versionName（构建号 $versionCode）",
+                // 版本随构建变化，整句交给资源表，不在代码里拼句子
+                stringResource(R.string.copyright_version_line, versionName, versionCode),
                 style = TvCaption,
                 color = ModaColors.TextDim,
             )
@@ -110,9 +112,9 @@ fun CopyrightNoticeDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                NoticeParagraphs.forEach { paragraph ->
+                NoticeParagraphs.forEach { paragraphRes ->
                     Text(
-                        text = paragraph,
+                        text = stringResource(paragraphRes),
                         style = TvBody.copy(fontSize = 17.sp, lineHeight = 25.sp),
                         color = ModaColors.Text,
                     )
@@ -126,7 +128,7 @@ fun CopyrightNoticeDialog(
                 horizontalArrangement = Arrangement.End,
             ) {
                 ActionButton(
-                    text = "我已知悉",
+                    text = stringResource(R.string.copyright_ack),
                     onClick = onDismiss,
                     modifier = Modifier.focusRequester(confirmFocus),
                     primary = true,

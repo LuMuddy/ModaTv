@@ -17,6 +17,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.moda.tv.data.local.DecoderMode
 import com.moda.tv.data.local.PlayerCore
@@ -79,7 +80,7 @@ private fun ChoicePanel(
 fun CorePanel(playingCore: PlayerCore, focusedIndex: Int, ijkUsable: Boolean) {
     ChoicePanel(
         title = "播放内核",
-        labels = PlayerCore.entries.map { it.label },
+        labels = PlayerCore.entries.map { stringResource(it.labelRes) },
         currentIndex = PlayerCore.entries.indexOf(playingCore),
         focusedIndex = focusedIndex,
         // 静默回退必须说出来：否则用户以为选了 IJK 就换了内核，
@@ -97,7 +98,7 @@ fun CorePanel(playingCore: PlayerCore, focusedIndex: Int, ijkUsable: Boolean) {
 fun DecoderPanel(mode: DecoderMode, focusedIndex: Int) {
     ChoicePanel(
         title = "解码方式",
-        labels = DecoderMode.entries.map { it.label },
+        labels = DecoderMode.entries.map { stringResource(it.labelRes) },
         currentIndex = DecoderMode.entries.indexOf(mode),
         focusedIndex = focusedIndex,
         note = null,

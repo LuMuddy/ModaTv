@@ -18,6 +18,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.moda.tv.data.local.DanmakuRegion
 import com.moda.tv.data.local.DanmakuRegions
@@ -81,14 +82,15 @@ fun DanmakuPanel(settings: PlayerSettings, focusedItem: Int) {
         }
         Spacer(Modifier.height(2.dp))
         // 位置档位一眼可见，不用确认键一档档试才知道有哪几档
-        Text(DanmakuRegions.joinToString(" · ") { it.label }, style = TvCaption)
+        Text(DanmakuRegions.map { stringResource(it.labelRes) }.joinToString(" · "), style = TvCaption)
     }
 }
 
+@Composable
 private fun danmakuItemValue(item: DanmakuItem, settings: PlayerSettings): String = when (item) {
     DanmakuItem.Enabled -> if (settings.danmakuEnabled) "开" else "关"
-    DanmakuItem.Size -> settings.sizeLabel
-    DanmakuItem.Region -> settings.danmakuRegion.label
+    DanmakuItem.Size -> stringResource(settings.sizeLabelRes)
+    DanmakuItem.Region -> stringResource(settings.danmakuRegion.labelRes)
     DanmakuItem.TopMargin -> (settings.topRatio * 100).toInt().toString() + "%"
     DanmakuItem.BottomMargin -> (settings.bottomRatio * 100).toInt().toString() + "%"
 }

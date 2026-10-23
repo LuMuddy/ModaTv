@@ -1,5 +1,6 @@
 package com.moda.tv.ui
 
+import androidx.annotation.StringRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -20,10 +21,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.moda.tv.R
 import com.moda.tv.ui.components.ActionButton
 import com.moda.tv.ui.theme.ModaColors
 import com.moda.tv.ui.theme.TvBody
@@ -42,6 +45,7 @@ import com.moda.tv.ui.theme.TvHeading
  *
  * @param title 弹窗标题，例如「清空全部历史记录？」
  * @param message 说明将要删除什么、有多少条、以及不可恢复
+ * @param confirmTextRes 确认按钮文案的资源 id：按钮文字要跟系统语言走
  * @param onConfirm 用户确认删除；调用方负责真正清空并关弹窗
  * @param onDismiss 取消、点弹窗外或按返回键
  */
@@ -51,7 +55,7 @@ fun ClearConfirmDialog(
     message: String,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
-    confirmText: String = "确认清空",
+    @StringRes confirmTextRes: Int = R.string.clear_confirm_button,
 ) {
     Dialog(
         onDismissRequest = onDismiss,
@@ -91,13 +95,13 @@ fun ClearConfirmDialog(
                 horizontalArrangement = Arrangement.End,
             ) {
                 ActionButton(
-                    text = "取消",
+                    text = stringResource(R.string.common_cancel),
                     onClick = onDismiss,
                     modifier = Modifier.focusRequester(cancelFocus),
                 )
                 Spacer(Modifier.width(14.dp))
                 ActionButton(
-                    text = confirmText,
+                    text = stringResource(confirmTextRes),
                     onClick = onConfirm,
                     primary = true,
                 )

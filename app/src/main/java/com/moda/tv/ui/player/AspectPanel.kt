@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.moda.tv.data.local.AspectMode
 import com.moda.tv.data.local.AspectModes
@@ -50,7 +51,7 @@ fun AspectPanel(mode: AspectMode, focusedIndex: Int) {
                         .border(cs.borderWidth, cs.border, chipShape)
                         .padding(horizontal = 14.dp, vertical = 8.dp)
                 ) {
-                    Text(option.label, style = TvBody, color = cs.content)
+                    Text(stringResource(option.labelRes), style = TvBody, color = cs.content)
                 }
                 Spacer(Modifier.width(8.dp))
             }

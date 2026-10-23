@@ -1,6 +1,7 @@
 package com.moda.tv.data.local
 
 import android.content.Context
+import androidx.annotation.StringRes
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
@@ -9,6 +10,7 @@ import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.moda.tv.R
 import java.io.IOException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
@@ -16,7 +18,10 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
-/** 倍速档位；label 直接进 OSD，浮点格式化只在这里出现一次 */
+/**
+ * 倍速档位；label 直接进 OSD，浮点格式化只在这里出现一次。
+ * 这一档是全语言通用的数字（"0.5x"），没有翻译需求，所以不进资源表。
+ */
 data class SpeedOption(val value: Float, val label: String)
 
 val PlayerSpeedOptions: List<SpeedOption> = listOf(
@@ -28,24 +33,28 @@ val PlayerSpeedOptions: List<SpeedOption> = listOf(
     SpeedOption(2.0f, "2.0x"),
 )
 
-/** 弹幕字号档位：sp 值同时是 Canvas 排版用的实际字号 */
-data class DanmakuSizeOption(val sizeSp: Float, val label: String)
+/**
+ * 弹幕字号档位：sp 值同时是 Canvas 排版用的实际字号。
+ * 存资源 id 而不是字符串：数据层不产出文案，文案要跟系统语言走。
+ * 注解写成 @param: 是显式指定目标——构造器参数上的 @StringRes 目标未定，编译器会报 KT-73255 告警。
+ */
+data class DanmakuSizeOption(val sizeSp: Float, @param:StringRes val labelRes: Int)
 
 val DanmakuSizeOptions: List<DanmakuSizeOption> = listOf(
-    DanmakuSizeOption(18f, "小"),
-    DanmakuSizeOption(22f, "标准"),
-    DanmakuSizeOption(28f, "大"),
-    DanmakuSizeOption(34f, "特大"),
+    DanmakuSizeOption(18f, R.string.danmaku_size_small),
+    DanmakuSizeOption(22f, R.string.danmaku_size_standard),
+    DanmakuSizeOption(28f, R.string.danmaku_size_large),
+    DanmakuSizeOption(34f, R.string.danmaku_size_xlarge),
 )
 
 /** 弹幕垂直区域：全部换算成屏幕高度的上/下占比，Custom 用可调的上下边距 */
-enum class DanmakuRegion(val label: String) {
-    FullScreen("全屏"),
-    TopThird("上 1/3"),
-    MiddleHalf("中部 1/2"),
-    BottomThird("下 1/3"),
-    UpperHalf("仅上半屏"),
-    Custom("自定义边距"),
+enum class DanmakuRegion(@param:StringRes val labelRes: Int) {
+    FullScreen(R.string.danmaku_region_full),
+    TopThird(R.string.danmaku_region_top_third),
+    MiddleHalf(R.string.danmaku_region_middle_half),
+    BottomThird(R.string.danmaku_region_bottom_third),
+    UpperHalf(R.string.danmaku_region_upper_half),
+    Custom(R.string.danmaku_region_custom),
 }
 
 val DanmakuRegions: List<DanmakuRegion> = DanmakuRegion.entries
@@ -55,12 +64,12 @@ val DanmakuRegions: List<DanmakuRegion> = DanmakuRegion.entries
  * Fit/Fill/Zoom 直接映射到 PlayerView 自带的 resizeMode；
  * Ratio16x9 / Ratio4x3 是 PlayerView 不支持的档位，做法见 PlayerScreen 里的注释。
  */
-enum class AspectMode(val label: String) {
-    Fit("原始比例"),
-    Fill("拉伸"),
-    Zoom("铺满"),
-    Ratio16x9("16:9"),
-    Ratio4x3("4:3"),
+enum class AspectMode(@param:StringRes val labelRes: Int) {
+    Fit(R.string.aspect_fit),
+    Fill(R.string.aspect_fill),
+    Zoom(R.string.aspect_zoom),
+    Ratio16x9(R.string.aspect_16x9),
+    Ratio4x3(R.string.aspect_4x3),
 }
 
 val AspectModes: List<AspectMode> = AspectMode.entries
@@ -77,9 +86,9 @@ const val MarginCombinedMaxPercent = 70f
  * 删历史时跟着一起清。两处不要混用——把播放页的改动写进这里，
  * 会让一次临时切换变成所有剧的新默认。
  */
-enum class PlayerCore(val label: String) {
-    Exo("ExoPlayer"),
-    Ijk("IJK"),
+enum class PlayerCore(@param:StringRes val labelRes: Int) {
+    Exo(R.string.player_core_exo),
+    Ijk(R.string.player_core_ijk),
 }
 
 /**
@@ -87,9 +96,9 @@ enum class PlayerCore(val label: String) {
  * 具体怎么把这两个值交给播放器由播放侧决定，存储层只负责原样保存与回读。
  * 与 [PlayerCore] 一样，这里的值是默认值，单剧覆盖见 [PlaybackOverrideStore]。
  */
-enum class DecoderMode(val label: String) {
-    Hardware("硬解"),
-    Software("软解"),
+enum class DecoderMode(@param:StringRes val labelRes: Int) {
+    Hardware(R.string.decoder_hardware),
+    Software(R.string.decoder_software),
 }
 
 /**
@@ -138,9 +147,9 @@ data class PlayerSettings(
         get() = PlayerSpeedOptions.firstOrNull { it.value == speed }?.label
             ?: PlayerSpeedOptions.first().label
 
-    val sizeLabel: String
-        get() = DanmakuSizeOptions.firstOrNull { it.sizeSp == danmakuSizeSp }?.label
-            ?: "标准"
+    val sizeLabelRes: Int
+        get() = DanmakuSizeOptions.firstOrNull { it.sizeSp == danmakuSizeSp }?.labelRes
+            ?: R.string.danmaku_size_standard
 }
 
 interface PlayerSettingsStore {

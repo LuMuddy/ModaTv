@@ -1,5 +1,8 @@
 package com.moda.tv.ui
 
+import androidx.annotation.StringRes
+import com.moda.tv.R
+
 /** 全应用路由；用简单字符串编码，避免引入 navigation-compose 也能跑 */
 sealed class Dest {
     data object Home : Dest()
@@ -36,9 +39,13 @@ sealed class Dest {
  * 放进 Destinations.kt 而不是 SettingsScreen.kt：路由要按它决定进哪一页，
  * 而路由不该反向依赖某个屏幕的私有实现——两边都只引用这里，依赖方向才是单向的。
  * 标题与说明是分组的固有属性，菜单页与子页标题都取这一份，不会出现两套说法。
+ * 存资源 id 而不是字符串：文案要跟系统语言走，字符串在构造枚举时就固化了语言。
  */
-enum class SettingsSectionId(val title: String, val desc: String) {
-    Playback("播放设置", "播放器内核、解码方式、默认倍速与片头片尾跳过"),
-    Network("网络与数据", "代理网址、扫码配置与本地数据清理"),
-    About("关于", "版本、构建与版权信息"),
+enum class SettingsSectionId(
+    @param:StringRes val titleRes: Int,
+    @param:StringRes val descRes: Int,
+) {
+    Playback(R.string.settings_group_playback_title, R.string.settings_group_playback_desc),
+    Network(R.string.settings_group_network_title, R.string.settings_group_network_desc),
+    About(R.string.settings_group_about_title, R.string.settings_group_about_desc),
 }

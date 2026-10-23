@@ -1,5 +1,6 @@
 package com.moda.tv.ui
 
+import androidx.annotation.StringRes
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -51,6 +52,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -61,6 +63,7 @@ import androidx.tv.material3.Border
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
 import com.moda.tv.BuildConfig
+import com.moda.tv.R
 import com.moda.tv.data.SaveOutcome
 import com.moda.tv.data.local.DecoderMode
 import com.moda.tv.data.local.PlayerCore
@@ -77,26 +80,29 @@ import kotlinx.coroutines.launch
 /** 子页的一条操作反馈：成功用普通色，失败用 Danger，肉眼可分辨 */
 internal data class Notice(val text: String, val failed: Boolean)
 
-/** 「清空」类操作的确认意图：标题、警示文案与完成提示跟着它走 */
+/**
+ * 「清空」类操作的确认意图：标题、警示文案与完成提示跟着它走。
+ * 存资源 id 而不是字符串：枚举一旦把文案固化在构造里，切换系统语言时这几句不会跟着变。
+ */
 internal enum class PendingClear(
-    val title: String,
-    val message: String,
-    val doneText: String,
+    @param:StringRes val titleRes: Int,
+    @param:StringRes val messageRes: Int,
+    @param:StringRes val doneTextRes: Int,
 ) {
     History(
-        title = "清空全部播放记录？",
-        message = "将清空所有观看记录与播放进度，删除后无法恢复。",
-        doneText = "已清除播放记录",
+        titleRes = R.string.clear_history_title,
+        messageRes = R.string.clear_history_message,
+        doneTextRes = R.string.clear_history_done,
     ),
     Favorites(
-        title = "清空全部收藏？",
-        message = "将清空所有收藏，删除后无法恢复。",
-        doneText = "已清除收藏",
+        titleRes = R.string.clear_favorites_title,
+        messageRes = R.string.clear_favorites_message,
+        doneTextRes = R.string.clear_favorites_done,
     ),
     SearchHistory(
-        title = "清空全部搜索历史？",
-        message = "将清空全部搜索历史，删除后无法恢复。",
-        doneText = "已清除搜索历史",
+        titleRes = R.string.clear_search_title,
+        messageRes = R.string.clear_search_message,
+        doneTextRes = R.string.clear_search_done,
     ),
 }
 
@@ -211,22 +217,21 @@ internal fun PlaybackSettingsSection(holder: PlayerSettingsHolder) {
     val ijkUsable = remember(context) { PlayerEngines.isIjkAvailable() }
     val settings = holder.value
 
-    SettingsSectionScaffold(title = SettingsSectionId.Playback.title) {
+    SettingsSectionScaffold(title = stringResource(SettingsSectionId.Playback.titleRes)) {
         SectionCard {
             // 内核：按 PlayerCore.entries 生成，而不是手写两行。
             // 枚举以后加档位时这里自动跟上，不用再回来改一遍布局。
             CyclingRow(
-                label = "播放器内核",
-                value = settings.playerCore.label,
+                label = stringResource(R.string.settings_playback_core),
+                value = stringResource(settings.playerCore.labelRes),
                 // 选了 IJK 但这台机器没有 so 时必须如实提示：
                 // 工厂会静默回退 Exo，不说明用户会以为设置没生效
                 warning = if (settings.playerCore == PlayerCore.Ijk && !ijkUsable) {
-                    "本机不可用，实际仍在使用 ExoPlayer"
+                    stringResource(R.string.settings_playback_core_warning)
                 } else {
                     null
                 },
-                hint = "ExoPlayer 兼容性好、系统自带；IJK 打包了 ffmpeg 软解，老片与特殊编码更能播。" +
-                    "这里是默认值，播放页里改的只作用于当前这部剧。",
+                hint = stringResource(R.string.settings_playback_core_hint),
                 onCycle = {
                     val entries = PlayerCore.entries
                     val i = entries.indexOf(settings.playerCore).coerceAtLeast(0)
@@ -237,15 +242,12 @@ internal fun PlaybackSettingsSection(holder: PlayerSettingsHolder) {
             )
 
             CyclingRow(
-                label = "解码方式",
-                value = settings.decoderMode.label,
-                hint =
-                    // 这段说明必须准确：ExoPlayer 没打包 ffmpeg 扩展，它的「软解」
-                    // 只能是挑系统自带的软件编解码器，系统没带就仍退回硬解；
-                    // 只有 IJK 的软解才是真正打包在 so 里的 ffmpeg。
-                    "硬解省电、4K 更流畅；软解兼容性更好。注意：ExoPlayer 内核的软解只能挑" +
-                        "系统自带的软件解码器，系统没带就仍走硬解；IJK 内核的软解才是内置 " +
-                        "ffmpeg 的真软解，老片、特殊编码要靠它。播放页里改的只作用于当前这部剧。",
+                label = stringResource(R.string.settings_playback_decoder),
+                value = stringResource(settings.decoderMode.labelRes),
+                // 这段说明必须准确：ExoPlayer 没打包 ffmpeg 扩展，它的「软解」
+                // 只能是挑系统自带的软件编解码器，系统没带就仍退回硬解；
+                // 只有 IJK 的软解才是真正打包在 so 里的 ffmpeg。
+                hint = stringResource(R.string.settings_playback_decoder_hint),
                 onCycle = {
                     val entries = DecoderMode.entries
                     val i = entries.indexOf(settings.decoderMode).coerceAtLeast(0)
@@ -256,9 +258,9 @@ internal fun PlaybackSettingsSection(holder: PlayerSettingsHolder) {
             )
 
             CyclingRow(
-                label = "默认播放倍速",
+                label = stringResource(R.string.settings_playback_default_speed),
                 value = speedLabelOf(settings.defaultSpeed),
-                hint = "每次起播都用这个倍速；播放页里临时调的速度只影响当前这一集。",
+                hint = stringResource(R.string.settings_playback_default_speed_hint),
                 onCycle = {
                     val i = PlayerSpeedOptions
                         .indexOfFirst { it.value == settings.defaultSpeed }
@@ -272,18 +274,18 @@ internal fun PlaybackSettingsSection(holder: PlayerSettingsHolder) {
             )
 
             CyclingRow(
-                label = "自动跳片头",
+                label = stringResource(R.string.settings_playback_skip_intro),
                 value = onOff(settings.skipIntroEnabled),
-                hint = "只对从来没播过的视频生效；看过的剧不会再把片头裁掉。",
+                hint = stringResource(R.string.settings_playback_skip_intro_hint),
                 onCycle = {
                     holder.apply(settings.copy(skipIntroEnabled = !settings.skipIntroEnabled))
                 },
             )
 
             CyclingRow(
-                label = "自动跳片尾",
+                label = stringResource(R.string.settings_playback_skip_outro),
                 value = onOff(settings.skipOutroEnabled),
-                hint = "到片尾直接连播下一集。关闭后仍会在播到 95% 时记为已看完。",
+                hint = stringResource(R.string.settings_playback_skip_outro_hint),
                 onCycle = {
                     holder.apply(settings.copy(skipOutroEnabled = !settings.skipOutroEnabled))
                 },
@@ -322,6 +324,12 @@ internal fun NetworkSettingsSection(
     val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
     val fieldFocus = remember { FocusRequester() }
+    // commit()/onClick 都是普通函数与 lambda，里面不能再调 @Composable 的 stringResource，
+    // 所以把这几条反馈文案在这里先取好
+    val savedText = stringResource(R.string.settings_network_saved)
+    val validateFailedText = stringResource(R.string.settings_network_validate_failed)
+    val resetDoneText = stringResource(R.string.settings_network_reset_done)
+    val resetFailedText = stringResource(R.string.settings_network_reset_failed)
 
     // 进入编辑才拉输入法：遥控器没有键盘，不显式 show() 的话模拟器上只是个空框
     LaunchedEffect(editing) {
@@ -347,13 +355,13 @@ internal fun NetworkSettingsSection(
             val error = try {
                 onSaveApiBase(draft)
             } catch (e: Exception) {
-                e.message ?: "校验失败"
+                e.message ?: validateFailedText
             }
             checking = false
             if (error == null) {
                 // 生效后才退出编辑态：失败留在框里，用户能就地改而不是从头再来
                 editing = false
-                notice = Notice("已生效：代理网址已更新，后续请求立即走新地址", failed = false)
+                notice = Notice(savedText, failed = false)
             } else {
                 notice = Notice(error, failed = true)
             }
@@ -361,15 +369,15 @@ internal fun NetworkSettingsSection(
     }
 
     SettingsSectionScaffold(
-        title = SettingsSectionId.Network.title,
-        subtitle = "修改后立即生效，无需重启应用。保存前会先请求一次探活，不通则不保存。",
+        title = stringResource(SettingsSectionId.Network.titleRes),
+        subtitle = stringResource(R.string.settings_network_subtitle),
     ) {
         SectionCard {
             // 代理网址：点这一行直接进编辑框手动输入（电视上用系统输入法）。
             // 扫码配置是更省事的可选入口，但手动输入必须始终可用——
             // 手机不在手边、或局域网不通时，用户仍然要能改地址。
             SettingRow(
-                label = "代理网址",
+                label = stringResource(R.string.settings_network_api_base),
                 value = apiBase,
                 chevron = true,
                 onClick = { startEdit() },
@@ -414,15 +422,17 @@ internal fun NetworkSettingsSection(
                     )
                     Row {
                         SettingRow(
-                            label = if (checking) "验证中…" else "保存并验证",
-                            value = "确定",
+                            label = stringResource(
+                                if (checking) R.string.common_verifying else R.string.settings_network_save_verify,
+                            ),
+                            value = stringResource(R.string.common_confirm),
                             chevron = true,
                             modifier = Modifier.weight(1f),
                             onClick = { if (!checking) commit() },
                         )
                         SettingRow(
-                            label = "取消",
-                            value = "放弃",
+                            label = stringResource(R.string.common_cancel),
+                            value = stringResource(R.string.common_discard),
                             chevron = true,
                             modifier = Modifier.weight(1f),
                             onClick = { editing = false; draft = apiBase; notice = null },
@@ -433,8 +443,8 @@ internal fun NetworkSettingsSection(
 
             // 扫码配置作为可选入口：手机在手边时比遥控器打字快得多
             SettingRow(
-                label = "扫码配置代理网址",
-                value = "打开二维码",
+                label = stringResource(R.string.settings_network_scan),
+                value = stringResource(R.string.settings_network_scan_value),
                 chevron = true,
                 onClick = { lanConfig = true },
             )
@@ -442,8 +452,8 @@ internal fun NetworkSettingsSection(
             // 不再单列「修改代理网址」：上面的「代理网址」行本身就是入口
             // （带箭头、可点击 → 打开编辑框），再列一行是同一个动作的第二个入口。
             SettingRow(
-                label = "恢复默认地址",
-                value = if (checking) "处理中…" else "恢复",
+                label = stringResource(R.string.settings_network_reset),
+                value = stringResource(if (checking) R.string.common_processing else R.string.common_reset),
                 chevron = true,
                 onClick = {
                     if (!checking) {
@@ -451,9 +461,9 @@ internal fun NetworkSettingsSection(
                         scope.launch {
                             try {
                                 onResetApiBase()
-                                notice = Notice("已恢复默认地址", failed = false)
+                                notice = Notice(resetDoneText, failed = false)
                             } catch (e: Exception) {
-                                notice = Notice(e.message ?: "恢复默认失败", failed = true)
+                                notice = Notice(e.message ?: resetFailedText, failed = true)
                             } finally {
                                 checking = false
                             }
@@ -464,24 +474,24 @@ internal fun NetworkSettingsSection(
 
             // 数据清理：三项都是不可撤销的批量删除，逐项二次确认
             SettingRow(
-                label = "清除播放记录",
-                value = "清空",
+                label = stringResource(R.string.settings_network_clear_history),
+                value = stringResource(R.string.common_clear),
                 chevron = true,
                 onClick = { pendingClear = PendingClear.History },
             )
             SettingRow(
-                label = "清除收藏",
-                value = "清空",
+                label = stringResource(R.string.settings_network_clear_favorites),
+                value = stringResource(R.string.common_clear),
                 chevron = true,
                 onClick = { pendingClear = PendingClear.Favorites },
             )
             SettingRow(
-                label = "清除搜索历史",
-                value = "清空",
+                label = stringResource(R.string.settings_network_clear_search),
+                value = stringResource(R.string.common_clear),
                 chevron = true,
                 onClick = { pendingClear = PendingClear.SearchHistory },
             )
-            HintText("清空操作不可撤销，每项都会先弹一次确认。")
+            HintText(stringResource(R.string.settings_network_clear_hint))
         }
 
         // 操作反馈落在滚动内容的末尾：它可能来自这一页的任意一处，
@@ -498,9 +508,11 @@ internal fun NetworkSettingsSection(
 
     // 清空确认：三项共用同一个弹窗，标题、文案与真正执行的动作都由 pendingClear 决定
     pendingClear?.let { pending ->
+        // onConfirm 是普通 lambda，取不到 stringResource，所以在组合里先解析好
+        val doneText = stringResource(pending.doneTextRes)
         ClearConfirmDialog(
-            title = pending.title,
-            message = pending.message,
+            title = stringResource(pending.titleRes),
+            message = stringResource(pending.messageRes),
             onConfirm = {
                 pendingClear = null
                 when (pending) {
@@ -508,7 +520,7 @@ internal fun NetworkSettingsSection(
                     PendingClear.Favorites -> onClearFavorites()
                     PendingClear.SearchHistory -> onClearSearchHistory()
                 }
-                notice = Notice(pending.doneText, failed = false)
+                notice = Notice(doneText, failed = false)
             },
             onDismiss = { pendingClear = null },
         )
@@ -542,14 +554,14 @@ internal fun AboutSettingsSection(
     versionName: String = BuildConfig.VERSION_NAME,
     versionCode: Int = BuildConfig.VERSION_CODE,
 ) {
-    SettingsSectionScaffold(title = SettingsSectionId.About.title) {
+    SettingsSectionScaffold(title = stringResource(SettingsSectionId.About.titleRes)) {
         SectionCard {
             // 纯展示行不带箭头：让「能点」与「不能点」一眼可分
-            SettingRow("应用名称", "ModaTV")
-            SettingRow("版本号", versionName)
-            SettingRow("构建号", versionCode.toString())
-            SettingRow("Android 版本", androidVersion())
-            SettingRow("分辨率", resolutionText())
+            SettingRow(stringResource(R.string.settings_about_app_name), "ModaTV")
+            SettingRow(stringResource(R.string.settings_about_version), versionName)
+            SettingRow(stringResource(R.string.settings_about_build), versionCode.toString())
+            SettingRow(stringResource(R.string.settings_about_android), androidVersion())
+            SettingRow(stringResource(R.string.settings_about_resolution), resolutionText())
         }
     }
 }
@@ -597,7 +609,9 @@ internal fun HintText(text: String) {
     )
 }
 
-internal fun onOff(enabled: Boolean): String = if (enabled) "开" else "关"
+@Composable
+internal fun onOff(enabled: Boolean): String =
+    stringResource(if (enabled) R.string.common_on else R.string.common_off)
 
 /** 倍速浮点 → 档位文案；落不到任何档位时退回第一档，绝不显示原始浮点 */
 internal fun speedLabelOf(value: Float): String =
@@ -820,15 +834,23 @@ internal fun SettingRow(
     }
 }
 
-internal fun androidVersion(): String =
-    "Android " + android.os.Build.VERSION.RELEASE +
-        "（API " + android.os.Build.VERSION.SDK_INT + "）"
+@Composable
+internal fun androidVersion(): String = stringResource(
+    R.string.settings_about_android_value,
+    android.os.Build.VERSION.RELEASE,
+    android.os.Build.VERSION.SDK_INT,
+)
 
 /** 分辨率同时给像素与 dp：像素对上电视的实际面板，dp 才是布局真正用的那一套 */
 @Composable
 internal fun resolutionText(): String {
     val config = LocalConfiguration.current
     val metrics = LocalContext.current.resources.displayMetrics
-    return metrics.widthPixels.toString() + "×" + metrics.heightPixels.toString() +
-        "（" + config.screenWidthDp + "×" + config.screenHeightDp + " dp）"
+    return stringResource(
+        R.string.settings_about_resolution_value,
+        metrics.widthPixels,
+        metrics.heightPixels,
+        config.screenWidthDp,
+        config.screenHeightDp,
+    )
 }

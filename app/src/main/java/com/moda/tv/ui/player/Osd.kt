@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.moda.tv.data.local.DecoderMode
@@ -284,6 +285,7 @@ fun PlayerOsd(
 }
 
 /** 标签一律精简到最短：清晰度只留档位值，其余两字或纯数值 */
+@Composable
 private fun slotLabel(
     slot: OsdSlot,
     tier: Tier?,
@@ -301,7 +303,7 @@ private fun slotLabel(
     OsdSlot.Aspect -> "比例"
     // 内核用短名（ExoPlayer 九个字符会把工具栏撑开），解码直接用枚举 label
     OsdSlot.Core -> if (effectiveCore == PlayerCore.Ijk) "IJK" else "Exo"
-    OsdSlot.Decoder -> effectiveDecoder.label
+    OsdSlot.Decoder -> stringResource(effectiveDecoder.labelRes)
     // 有记录就只显示时间，不再重复「片头/片尾」四个字；没记录时才用文字占位
     OsdSlot.Intro -> if (introMs > 0L) formatClock(introMs) else "片头"
     OsdSlot.Outro -> if (outroMs > 0L) formatClock(outroMs) else "片尾"

@@ -30,6 +30,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -41,6 +42,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.moda.tv.data.LanConfigServer
 import com.moda.tv.data.LanNet
+import com.moda.tv.R
 import com.moda.tv.data.SaveOutcome
 import com.moda.tv.ui.components.ActionButton
 import com.moda.tv.ui.theme.ModaColors
@@ -171,13 +173,15 @@ fun LanConfigDialog(
                         if (bmp != null) {
                             Image(
                                 bitmap = bmp.asImageBitmap(),
-                                contentDescription = "扫码配置二维码",
+                                contentDescription = stringResource(R.string.lan_qr_content_desc),
                                 filterQuality = FilterQuality.None,
                                 modifier = Modifier.size(276.dp),
                             )
                         } else {
                             Text(
-                                if (ip == null) "未连接到局域网" else "二维码生成失败",
+                                stringResource(
+                                    if (ip == null) R.string.lan_no_lan else R.string.lan_qr_failed,
+                                ),
                                 style = TvBody,
                                 color = ModaColors.Bg,
                             )
@@ -185,12 +189,14 @@ fun LanConfigDialog(
                     }
                     Spacer(Modifier.height(10.dp))
                     Text(
-                        text = when {
-                            ip == null -> "未连接到局域网，无法扫码配置"
-                            startFailed -> "本地服务启动失败（端口被占用）"
-                            lanAddress == null -> "本地服务未运行"
-                            else -> "服务运行中 · 仅本弹窗打开期间可用"
-                        },
+                        text = stringResource(
+                            when {
+                                ip == null -> R.string.lan_status_no_lan
+                                startFailed -> R.string.lan_status_start_failed
+                                lanAddress == null -> R.string.lan_status_not_running
+                                else -> R.string.lan_status_running
+                            },
+                        ),
                         style = TvCaption,
                         color = when {
                             ip == null || startFailed -> ModaColors.Danger
@@ -203,27 +209,31 @@ fun LanConfigDialog(
 
                 // ---------- 右：地址与说明 ----------
                 Column(Modifier.weight(1f)) {
-                    Text("局域网扫码配置", style = TvHeading)
+                    Text(stringResource(R.string.lan_title), style = TvHeading)
                     Spacer(Modifier.height(14.dp))
 
                     if (lanAddress != null) {
                         // 便于手输兜底：原始地址单独一行等宽展示
-                        InfoLine("手机访问地址", lanAddress)
+                        InfoLine(stringResource(R.string.lan_phone_url), lanAddress)
                         Spacer(Modifier.height(6.dp))
                     } else if (ip != null) {
-                        InfoLine("局域网地址", "服务未运行")
+                        InfoLine(
+                            stringResource(R.string.lan_lan_address),
+                            stringResource(R.string.lan_service_not_running),
+                        )
                         Spacer(Modifier.height(6.dp))
                     }
 
-                    InfoLine("当前代理网址", current.ifBlank { "（未设置）" })
+                    InfoLine(
+                        stringResource(R.string.lan_current_api_base),
+                        current.ifBlank { stringResource(R.string.lan_not_set) },
+                    )
                     Spacer(Modifier.height(14.dp))
 
                     Text(
-                        text = if (ip == null) {
-                            "未连接到局域网，无法扫码配置。可以返回后用「修改」手动输入代理网址。"
-                        } else {
-                            "用手机扫描左侧二维码，在同一局域网下填写新地址，提交后此处会自动更新。"
-                        },
+                        text = stringResource(
+                            if (ip == null) R.string.lan_hint_no_lan else R.string.lan_hint_scan,
+                        ),
                         style = TvBody.copy(fontSize = 17.sp),
                         color = ModaColors.TextDim,
                     )
@@ -231,14 +241,14 @@ fun LanConfigDialog(
                     Spacer(Modifier.height(20.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         ActionButton(
-                            text = "关闭",
+                            text = stringResource(R.string.common_close),
                             onClick = onDismiss,
                             primary = true,
                             modifier = Modifier.focusRequester(closeFocus),
                         )
                         if (ip == null) {
                             ActionButton(
-                                text = "手动编辑",
+                                text = stringResource(R.string.lan_manual_edit),
                                 onClick = onManualEdit,
                                 modifier = Modifier.focusRequester(manualFocus),
                             )
