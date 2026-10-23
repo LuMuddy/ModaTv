@@ -55,9 +55,22 @@ private val EpisodeNumbering = Regex(
     "(第\\s*\\d+\\s*[季期集话回]\\s*[：:]?\\s*)+"
 )
 
+/**
+ * 上游 seriesPartTitle 的集号槽位可能是空的（实测「空枪」返回「第1季 第集」），
+ * 旧正则要求集号必须有数字，「第集」这种残渣匹配不上就漏到了屏上。
+ * 编号词后跟空集号同样算编号残渣，一并剥掉。
+ */
+private val EpisodeEmptyNumbering = Regex(
+    "(第\\s*\\d+\\s*季\\s*第\\s*[集期话回]\\s*[：:]?\\s*)+"
+)
+
 private fun cleanEpisodeLabel(label: String, vid: String): String {
     if (label.isBlank() || label == vid) return ""
-    return label.replace(EpisodeNumbering, "").trim().trimStart('：', ':', ' ')
+    return label
+        .replace(EpisodeEmptyNumbering, "")
+        .replace(EpisodeNumbering, "")
+        .trim()
+        .trimStart('：', ':', ' ')
 }
 
 /**

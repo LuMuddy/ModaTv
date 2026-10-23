@@ -903,17 +903,6 @@ fun HeroCarousel(
     }
 }
 
-/**
- * 分集标题常常自带编号（如「第1期：心理战→…」），而卡片上已经有「第 N 集」，
- * 两个编号并排既重复又挤占宽度，这里把前缀剥掉，只留副标题本身。
- */
-// 覆盖「第1季 第01集」「第3期：」「第12话」等所有编号形态：
-// 可能连续出现（先季再集），所以用 + 循环剥掉，剥到没有编号为止。
-private val EpisodePrefix = Regex("(第\\s*\\d+\\s*[季期集话回]\\s*[：:]?\\s*)+")
-
-private fun stripEpisodePrefix(label: String): String =
-    label.replace(EpisodePrefix, "").trim().trimStart('：', ':', ' ')
-
 /** 集数 chip：第 N 集 + label，VIP/预告用角标区分 */
 @Composable
 fun EpisodeChip(

@@ -1204,7 +1204,7 @@ class TvViewModel(private val app: Context) : ViewModel() {
                     vid = dest.vid,
                     title = title,
                     episodeIndex = episodeIndex,
-                    episodeLabel = labelOf(episodeIndex, dest.vid),
+                    episodeLabel = labelOf(episodeIndex),
                     url = link.url,
                     // f) 空串要让播放器走 MP4 直链，而不是拿空地址去建 HLS
                     hlsUrl = link.hlsUrl.ifBlank { null },
@@ -1299,16 +1299,16 @@ class TvViewModel(private val app: Context) : ViewModel() {
         }
     }
 
-    private fun labelOf(episodeIndex: Int, vid: String): String {
-        val label = episodes.firstOrNull { it.index == episodeIndex }?.label.orEmpty()
-        // 没有元数据时 label 会退化成 vid，直接展示会是一串乱码
-        // 兜底句走资源：它是固定文案，不属于接口元数据，藏成中文字面量会让英文系统露出破绽
-        return if (label.isNotBlank() && label != vid) {
-            label
-        } else {
-            app.getString(R.string.state_episode_index, episodeIndex)
-        }
-    }
+    /**
+     * 顶栏集号只认「第 N 集」，不搬运上游 label：seriesPartTitle 不可靠——
+     * 电视剧是「第4季 第01集」（与集号行重复），「空枪」这类上游干脆给「第1季 第集」
+     * （集号槽位为空，实测 meta 接口如此），原样上屏就是错句。
+     * 库里存 0 起下标，人话集号 +1（与历史页 / 选集浮层同一口径，旧实现漏了 +1，
+     * 兜底时会把第 1 集写成「第 0 集」）。返回值仍随集号变化，
+     * 播放页 initialStartMs 的 remember(cid, episodeLabel) 语义不变。
+     */
+    private fun labelOf(episodeIndex: Int): String =
+        app.getString(R.string.state_episode_index, episodeIndex + 1)
 
     /**
      * 换档位：PlayerScreen 以 url 为 key 重建播放器，所以这里必须把当前进度当作
