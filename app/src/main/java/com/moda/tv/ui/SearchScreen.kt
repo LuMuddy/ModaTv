@@ -62,6 +62,8 @@ import androidx.tv.material3.LocalContentColor
 import androidx.tv.material3.Surface
 import androidx.tv.material3.SurfaceDefaults
 import com.moda.tv.model.VideoItem
+import com.moda.tv.ui.components.ListMetrics
+import com.moda.tv.ui.components.listItemInset
 import com.moda.tv.ui.components.ActionButton
 import com.moda.tv.ui.components.EmptyState
 import com.moda.tv.ui.components.ErrorState
@@ -234,7 +236,7 @@ fun SearchScreen(
                     shown.isEmpty() -> EmptyState("换个关键词试试")
                     else -> LazyVerticalGrid(
                         columns = GridCells.Fixed(4),
-                        contentPadding = PaddingValues(bottom = 32.dp),
+                        contentPadding = ListMetrics.gridContentPadding(top = 0.dp, side = 0.dp),
                         horizontalArrangement = Arrangement.spacedBy(20.dp),
                         verticalArrangement = Arrangement.spacedBy(24.dp),
                         modifier = Modifier.fillMaxSize(),
@@ -244,7 +246,9 @@ fun SearchScreen(
                             VideoCard(
                                 item = item,
                                 onClick = { onOpenDetail(item.cid, item.title) },
-                                modifier = Modifier.fillMaxWidth(),
+                                // 规则 4：列表项必须留聚焦/点击的溢出余量，
+                                // 否则光标压到视口边缘时白边与点击高亮会被切平
+                                modifier = Modifier.fillMaxWidth().listItemInset(),
                                 width = null,
                             )
                         }
