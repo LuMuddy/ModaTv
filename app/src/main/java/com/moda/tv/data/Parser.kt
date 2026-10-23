@@ -8,7 +8,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * 后端响应解析。字段名以真实响应为准（2024 联调实测）：
+ * 后端响应解析。字段名以真实响应为准（联调实测）：
  *   eps     → { ok, cid, vids[], vip[], meta{ title, category_map } }
  *   meta    → { ok, items[{ id, fields{ title, series_part_title, category_map } }] }
  *   info    → { ok, vid, cid, ti, fn, guid, dtiers[{ fno, fn, defn, res, avail, fc, segs }] }
