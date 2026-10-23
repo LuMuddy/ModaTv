@@ -33,6 +33,16 @@ android {
         buildConfigField("String", "DEVICE_FP", literal(secret("modatv.deviceFp")))
         buildConfigField("String", "HOT_WORDS_APP_ID", literal(secret("modatv.hotWordsAppId")))
         buildConfigField("String", "HOT_WORDS_APP_KEY", literal(secret("modatv.hotWordsAppKey")))
+
+        /**
+         * 只保留 TV 盒子真正常见的两个 ABI。
+         * 原因是 ijk 的 native 包同时打了 arm64-v8a / armeabi-v7a / armeabi / x86_64，
+         * 每个 ABI 的 libijkffmpeg.so 都在 5~12MB，全量收进来会让 APK 直接多出几十 MB，
+         * 而电视端几乎不存在 x86/armeabi 设备，所以按 ABI 过滤是性价比最高的一刀。
+         */
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     buildTypes {
@@ -73,6 +83,20 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer-hls:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
     implementation("androidx.media3:media3-datasource-okhttp:1.4.1")
+
+    /**
+     * IJK 内核：只用一个自包含的 AAR，它同时带 tv.danmaku.ijk.media.player.IjkMediaPlayer 的
+     * Java 类和 arm64-v8a / armeabi-v7a 的 libijkplayer/libijkffmpeg/libijksdl.so。
+     *
+     * 为什么用这个坐标而不是官方 tv.danmaku.ijk.media:ijkplayer-java:0.8.8：
+     * 官方 0.8.8 只发布在 jcenter 上，jcenter 已停服；实测 Maven Central 与 jitpack 上都没有
+     * tv.danmaku.ijk.media 这个 group（POM 全部 404），而本项目 settings.gradle.kts 里
+     * repositoriesMode 是 FAIL_ON_PROJECT_REPOS，app 模块不能自己加仓库，所以 0.8.8 拿不到。
+     * 这个包是 IJK 0.8.8 的社区重新打包版，Java 包名与 JNI 符号都和官方一致
+     * （已用 strings 校验过 .so 里的 tv/danmaku/ijk/media/player/IjkMediaPlayer 符号），
+     * 且从 mavenCentral() 直接可解析，不需要额外仓库。
+     */
+    implementation("xyz.doikki.android.dkplayer:player-ijk:3.3.7")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
