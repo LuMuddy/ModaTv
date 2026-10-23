@@ -65,7 +65,9 @@ import androidx.tv.material3.Icon
 import androidx.tv.material3.IconButton
 import androidx.tv.material3.IconButtonDefaults
 import androidx.tv.material3.LocalContentColor
+import java.util.Locale
 import kotlinx.coroutines.delay
+import com.moda.tv.model.LibraryEntry
 import com.moda.tv.model.Tier
 import com.moda.tv.model.VideoItem
 import com.moda.tv.ui.theme.ModaColors
@@ -74,9 +76,23 @@ import com.moda.tv.ui.theme.TvCaption
 import com.moda.tv.ui.theme.TvHeading
 import com.moda.tv.ui.theme.TvTitle
 
-/** 焦点描边：TV 上离得远，只靠放大不够，必须同时有明显白边 */
+/**
+ * 焦点描边：TV 上离得远，只靠放大不够，必须同时有明显白边。
+ *
+ * 描边形状必须比卡片**向内缩 width/2**，让整条描边落在卡片内部。
+ *
+ * 原因（读 tv-material Surface.kt 的 tvSurfaceBorder 确认）：
+ *   drawOutline(style = Stroke(width)) 是沿 shape 轮廓**居中**描的，
+ *   外侧一半会画到卡片边界之外。而 Card 自己加了 graphicsLayer{clip = true}，
+ *   那一半会被裁掉 —— 表现就是「白边只剩内侧一半，或者干脆看不见」。
+ *   向内缩之后描边完全在内，clip 裁不到，也不依赖列表给它留多少空白。
+ *
+ * 这是根治：之前试过在列表项外面加 padding（listItemInset），
+ * 但那是让「项」变大，卡片边界与描边的关系没变，一换容器尺寸就复发。
+ */
 private fun focusBorder(width: Dp, corner: Dp, color: Color = ModaColors.Focus) =
     Border(border = BorderStroke(width, color), shape = RoundedCornerShape(corner))
+
 
 /**
  * 填蓝色卡底专用两个深色。
@@ -252,6 +268,12 @@ fun VideoCard(
      * 「一屏内看到一整行」就没法保证（见 HomeScreen 里轮播高度的取舍说明）。
      */
     titleMaxLines: Int = 2,
+    /**
+     * 是否画副标题那一行。首页 5 列网格里必须关掉：
+     * 副标题又是一整行 14sp 文字，加上标题就是两行 + 海报，
+     * 一屏连两行海报都放不下，而且「有无副标题」还会让行高在数据之间来回跳。
+     */
+    showSubtitle: Boolean = true,
 ) {
     val corner = 12.dp
     val sized = if (width == null) modifier else modifier.width(width)
@@ -301,7 +323,7 @@ fun VideoCard(
                 maxLines = titleMaxLines,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (item.subtitle.isNotBlank()) {
+            if (showSubtitle && item.subtitle.isNotBlank()) {
                 Spacer(Modifier.height(4.dp))
                 Text(
                     text = item.subtitle,
@@ -312,6 +334,121 @@ fun VideoCard(
                 )
             }
         }
+    }
+}
+
+/**
+ * 首页「继续观看」行的卡片：海报（底部叠进度条）+ 剧名 + 第 N 集 + 进度。
+ *
+ * 为什么和 HistoryScreen 的 HistoryCard 不复用：
+ * 那个卡片带「删除」按钮，删除按钮必须靠几何位置从海报按「下」才够得着（见它的注释），
+ * 首页这一行是要横着扫的，多一个可聚焦按钮会让左右键在「卡片 → 删除 → 下一张」之间打转。
+ * 首页只读、只续播，所以这里刻意做得更薄：整张卡一个焦点目标，左右就是左右。
+ *
+ * 用 RemoteImage 而不是 VideoCard 的内部结构：VideoCard 带 badge/副标题两行文字，
+ * 一行十张横向铺开时高度会随副标题有无而浮动，行高就不稳了。
+ */
+@Composable
+fun ContinueWatchingCard(
+    entry: LibraryEntry,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    width: Dp? = 110.dp,
+) {
+    val corner = 12.dp
+    val sized = if (width == null) modifier else modifier.width(width)
+    Card(
+        onClick = onClick,
+        modifier = sized,
+        shape = CardDefaults.shape(shape = RoundedCornerShape(corner)),
+        colors = CardDefaults.colors(
+            containerColor = ModaColors.Surface,
+            contentColor = ModaColors.Text,
+            focusedContainerColor = ModaColors.SurfaceHigh,
+            focusedContentColor = ModaColors.Text,
+            pressedContainerColor = AccentDeepHi,
+            pressedContentColor = Color.White,
+        ),
+        scale = CardDefaults.scale(scale = 1f, focusedScale = 1.06f, pressedScale = 1f),
+        border = CardDefaults.border(
+            border = Border.None,
+            focusedBorder = focusBorder(3.dp, corner),
+        ),
+    ) {
+        Column {
+            Box(Modifier.fillMaxWidth()) {
+                RemoteImage(
+                    url = entry.cover,
+                    title = entry.title,
+                    modifier = Modifier.fillMaxWidth().aspectRatio(3f / 4f),
+                    corner = 0.dp,
+                )
+                // 进度条压在图片下沿：它必须和海报是一体的，
+                // 挪到文字区就成了第三行小字，3 米外根本读不出来看到哪了
+                if (entry.durationMs > 0L) {
+                    WatchProgressBar(
+                        positionMs = entry.positionMs,
+                        durationMs = entry.durationMs,
+                        modifier = Modifier.align(Alignment.BottomCenter),
+                    )
+                }
+            }
+            Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
+                Text(
+                    text = entry.title,
+                    style = TvBody.copy(fontSize = 15.sp),
+                    color = contentColor(),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    // 集号与进度压在同一行：两行文字会把卡高撑过海报，
+                    // 十张并排时下面那半行就永远露不全
+                    text = entryEpisodeLabel(entry.episodeIndex) + watchProgressSuffix(entry),
+                    style = TvCaption.copy(fontSize = 12.sp),
+                    color = secondaryContentColor(),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+/** 进度条：positionMs / durationMs 夹到 0..1，脏数据不会把条画到卡片外面 */
+@Composable
+private fun WatchProgressBar(positionMs: Long, durationMs: Long, modifier: Modifier = Modifier) {
+    val fraction = if (durationMs > 0L) {
+        (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+    // 8dp：电视上 3 米观看距离，再细就只剩一条噪点了；深色槽保证任何海报上都看得出这是进度条
+    Box(modifier.fillMaxWidth().height(8.dp).background(Color.Black.copy(alpha = 0.72f))) {
+        Box(Modifier.fillMaxWidth(fraction).fillMaxHeight().background(ModaColors.Accent))
+    }
+}
+
+/** 集号按人话显示：库里存的是 0 起下标，用户看到的是「第几集」 */
+private fun entryEpisodeLabel(episodeIndex: Int): String =
+    if (episodeIndex < 0) "集号未知" else "第 ${episodeIndex + 1} 集"
+
+/** 进度后缀：「· 32:15 / 47:38」；没有时长信息时返回空串，不显示半截文案 */
+private fun watchProgressSuffix(entry: LibraryEntry): String {
+    if (entry.durationMs <= 0L) return ""
+    return " · " + watchClock(entry.positionMs) + " / " + watchClock(entry.durationMs)
+}
+
+private fun watchClock(ms: Long): String {
+    val total = ms.coerceAtLeast(0L) / 1000L
+    val h = total / 3600
+    val m = (total % 3600) / 60
+    val s = total % 60
+    return if (h > 0) {
+        String.format(Locale.US, "%d:%02d:%02d", h, m, s)
+    } else {
+        String.format(Locale.US, "%02d:%02d", m, s)
     }
 }
 
@@ -536,6 +673,12 @@ fun HeroCarousel(
      * 右上角工具栏的「设置」离得更近，于是焦点飞到了右上角——用户只想继续往下看电视行。
      */
     rightEdgeFocus: FocusRequester? = null,
+    /**
+     * 大图区高度。默认沿用 [HERO_STAGE_HEIGHT]；首页 tab 化之后顶部多了常驻的 tab 栏，
+     * 只把「主视觉」压矮，缩略图尺寸与整排行为一概不变——那才是用户在操作的东西。
+     * 做成参数而不是改常量：详情/其它调用方不该被首页的预算挤到。
+     */
+    stageHeight: Dp = HERO_STAGE_HEIGHT,
 ) {
     // 列表变了要回到首条，否则越界下标会让大图空白
     var index by remember(items) { mutableStateOf(0) }
@@ -622,7 +765,7 @@ fun HeroCarousel(
         Box(
             Modifier
                 .fillMaxWidth()
-                .height(HERO_STAGE_HEIGHT)
+                .height(stageHeight)
                 .clip(RoundedCornerShape(14.dp))
                 .background(ModaColors.Surface),
         ) {
