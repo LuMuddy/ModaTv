@@ -29,6 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -36,6 +37,7 @@ import androidx.tv.material3.Border
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
 import com.moda.tv.BuildConfig
+import com.moda.tv.R
 import com.moda.tv.data.SaveOutcome
 import com.moda.tv.data.local.PlayerSettings
 import com.moda.tv.ui.theme.ModaColors
@@ -101,9 +103,9 @@ fun SettingsScreen(
     ) {
         // 不放「返回」按钮：遥控器返回键已经能退出本页，
         // 屏幕上再占一个可聚焦格位只会和下面的行抢焦点。
-        Text("设置", style = TvTitle, color = ModaColors.Text)
+        Text(stringResource(R.string.settings_title), style = TvTitle, color = ModaColors.Text)
         Text(
-            "修改后立即生效，无需重启应用。",
+            stringResource(R.string.settings_subtitle),
             style = TvCaption,
             color = ModaColors.TextDim,
             modifier = Modifier.padding(top = 6.dp),
@@ -130,24 +132,25 @@ fun SettingsScreen(
             // 否则三张卡之间会比卡片内行距宽出两倍。
         ) {
             SettingsEntryCard(
-                title = SettingsSectionId.Playback.title,
-                desc = SettingsSectionId.Playback.desc,
-                summary = settings.playerCore.label + " · " +
-                    settings.decoderMode.label + " · " +
+                title = stringResource(SettingsSectionId.Playback.titleRes),
+                desc = stringResource(SettingsSectionId.Playback.descRes),
+                // 摘要由三个各自独立的档位文案拼成，分隔符是纯标点，不进资源表
+                summary = stringResource(settings.playerCore.labelRes) + " · " +
+                    stringResource(settings.decoderMode.labelRes) + " · " +
                     speedLabelOf(settings.defaultSpeed),
                 onClick = { onOpenGroup(SettingsSectionId.Playback) },
             )
             SettingsEntryCard(
-                title = SettingsSectionId.Network.title,
-                desc = SettingsSectionId.Network.desc,
+                title = stringResource(SettingsSectionId.Network.titleRes),
+                desc = stringResource(SettingsSectionId.Network.descRes),
                 // 代理网址可能很长（带路径/端口），摘要单行截断，
                 // 想看全的进子页——那里才是逐字可读的地方
                 summary = apiBase,
                 onClick = { onOpenGroup(SettingsSectionId.Network) },
             )
             SettingsEntryCard(
-                title = SettingsSectionId.About.title,
-                desc = SettingsSectionId.About.desc,
+                title = stringResource(SettingsSectionId.About.titleRes),
+                desc = stringResource(SettingsSectionId.About.descRes),
                 summary = "ModaTV " + versionName,
                 onClick = { onOpenGroup(SettingsSectionId.About) },
             )
@@ -157,8 +160,8 @@ fun SettingsScreen(
             // 行样式与子页 SettingRow 完全同源，圆角/底色由 SectionCard 统一给。
             SectionCard {
                 SettingRow(
-                    label = "版权声明",
-                    value = "免费软件 · 查看",
+                    label = stringResource(R.string.copyright_title),
+                    value = stringResource(R.string.settings_copyright_value),
                     chevron = true,
                     onClick = onOpenCopyright,
                 )

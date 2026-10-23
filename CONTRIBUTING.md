@@ -35,7 +35,7 @@
 
 取改动所在的层次，同一模块固定同一个词：
 
-`home` 首页 · `search` 搜索 · `detail` 详情 · `player` 播放器 · `data` 网络/仓库/缓存 · `model` 数据模型 · `ui` 通用组件 · `build` 构建 · `deps` 依赖
+`home` 首页 · `search` 搜索 · `detail` 详情 · `player` 播放器 · `settings` 设置 · `data` 网络/仓库/缓存 · `model` 数据模型 · `ui` 通用组件 · `build` 构建 · `deps` 依赖
 
 新增模块时先在此处登记，再使用。
 
