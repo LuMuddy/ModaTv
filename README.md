@@ -84,7 +84,9 @@ app/build/outputs/apk/debug/app-debug.apk
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-应用仅注册 `LEANBACK_LAUNCHER`，固定横屏，需要 `android.software.leanback`。
+应用同时注册 `LEANBACK_LAUNCHER` 与 `LAUNCHER`：电视桌面走前者，手机/平板桌面与不带
+`android.software.leanback` 的调试机走后者，两种设备都能看到图标。
+界面固定横屏；leanback 仍为 `required=true`。
 minSdk 23 覆盖大多数电视盒子；Android TV / Google TV 模拟器可直接运行。
 
 ---
