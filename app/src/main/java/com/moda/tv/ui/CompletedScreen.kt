@@ -111,7 +111,7 @@ fun CompletedScreen(
         Spacer(Modifier.height(24.dp))
 
         if (entries.isEmpty()) {
-            EmptyState("还没有看完的剧集\n看到 95% 或跳片尾之后会自动记到这里")
+            EmptyState("还没有看完的剧集\n看完一集之后会自动记到这里")
         } else {
             LazyVerticalGrid(
                 columns = GridCells.Fixed(4),
