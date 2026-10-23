@@ -1053,8 +1053,12 @@ fun PlayerScreen(
                         (it == OsdSlot.Intro || it == OsdSlot.Outro)
                 }
                 if (markSlot != null) {
+                    // 只认首次按下（repeatCount == 0），重复事件一律忽略。
+                    // 踩过的坑：原来用 !isLongPress 过滤，但该标记只在**第一发**重复事件上为 true，
+                    // 第二发起又是 false——按住不放时每个重复键都会重新记录并重启 800ms 清除计时器，
+                    // 重复间隔（约 50~100ms）远小于 800ms，计时器永远被续期，长按清除在任何真实遥控器上都触发不了。
                     if (event.type == KeyEventType.KeyDown &&
-                        !event.nativeKeyEvent.isLongPress
+                        event.nativeKeyEvent.repeatCount == 0
                     ) {
                         recordMark(markSlot == OsdSlot.Intro)
                         armLongPress(markSlot == OsdSlot.Intro)
