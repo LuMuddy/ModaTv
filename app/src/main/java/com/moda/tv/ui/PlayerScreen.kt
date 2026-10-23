@@ -3,10 +3,10 @@ package com.moda.tv.ui
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -32,15 +32,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -76,7 +82,6 @@ import com.moda.tv.ui.player.PlayerErrorPane
 import com.moda.tv.ui.player.PlayerOsd
 import com.moda.tv.ui.player.adjustDanmaku
 import com.moda.tv.ui.player.visibleOsdSlots
-import com.moda.tv.ui.theme.ModaColors
 import com.moda.tv.ui.theme.TvBody
 import com.moda.tv.ui.theme.TvCaption
 import java.text.SimpleDateFormat
@@ -119,50 +124,57 @@ private fun SeekHint(accumMs: Long, modifier: Modifier = Modifier) {
 /**
  * 播放缓冲指示器。
  *
- * 只放一行「正在加载…」不足以说明系统还活着：电视上加载 2~3 秒很常见，
- * 静态文字会让人以为卡死。这里用三点循环 + 细进度环的组合，
- * 动画本身不依赖网络状态，只要还在缓冲就一直在动，用户能看到「在努力」。
+ * 形态按业内播放器的通用做法：半透明深色圆底 + 白色细环 + 90° 弧匀速转圈（900ms 一圈）。
+ * 不用三点跳动：点阵静止下来和卡死长得一样，而转动的弧在余光里也能读出「还在转」。
+ * 深色圆底是给亮画面兜底——纯白细环压在白墙镜头上会直接消失。
+ * 文案只留在起播屏（PlayerUi.Loading），缓冲时再叠一行字属于重复信息。
  */
 @Composable
 private fun BufferingIndicator(modifier: Modifier = Modifier) {
     val transition = rememberInfiniteTransition(label = "buffering")
-    // 三点依次亮起：节奏感比单个转圈更「轻」，不会盖过画面
-    val phase by transition.animateFloat(
+    // 匀速：加减速的缓动会让环看起来一顿一顿；900ms 一圈是播放器里的常见节奏
+    val angle by transition.animateFloat(
         initialValue = 0f,
-        targetValue = 3f,
+        targetValue = 360f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1200, easing = LinearEasing),
+            animation = tween(durationMillis = 900, easing = LinearEasing),
             repeatMode = RepeatMode.Restart,
         ),
-        label = "dots",
+        label = "spin",
     )
     Box(modifier, contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                repeat(3) { i ->
-                    // 每个点在自己的 1/3 时段内最亮
-                    val active = (phase.toInt() % 3) == i
-                    Box(
-                        Modifier
-                            .padding(horizontal = 5.dp)
-                            .size(if (active) 14.dp else 10.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (active) ModaColors.AccentSoft
-                                else Color.White.copy(alpha = 0.35f),
-                            ),
-                    )
-                }
+        Box(
+            Modifier
+                .size(64.dp)
+                .background(Color.Black.copy(alpha = 0.28f), CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Canvas(Modifier.size(40.dp)) {
+                val strokePx = 3.dp.toPx()
+                val inset = strokePx / 2f
+                val ring = Size(size.width - strokePx, size.height - strokePx)
+                drawCircle(
+                    color = Color.White.copy(alpha = 0.20f),
+                    radius = ring.width / 2f,
+                    center = center,
+                    style = Stroke(strokePx),
+                )
+                drawArc(
+                    color = Color.White.copy(alpha = 0.92f),
+                    startAngle = angle,
+                    sweepAngle = 90f,
+                    useCenter = false,
+                    topLeft = Offset(inset, inset),
+                    size = ring,
+                    style = Stroke(width = strokePx, cap = StrokeCap.Round),
+                )
             }
-            Spacer(Modifier.height(16.dp))
-            Text(
-                "正在加载…",
-                style = TvBody.copy(fontSize = 18.sp),
-                color = Color.White.copy(alpha = 0.85f),
-            )
         }
     }
 }
+/** 缓冲持续多久才值得弹动画：短于此的抖动用户根本来不及看见，弹了反而更吵 */
+private const val BufferingShowDelayMs = 400L
+
 private const val SeekStepMs = 10_000L
 private const val TickMs = 300L
 private const val ProgressReportMs = 1000L
@@ -321,6 +333,20 @@ fun PlayerScreen(
     var playing by remember { mutableStateOf(false) }
     // 是否正在缓冲：控制加载动画的显隐
     var buffering by remember { mutableStateOf(true) }
+    // 真正把动画亮出来的闸门：切片、微卡常常只有一两百毫秒，一抖就全屏弹一次再立刻消失，
+    // 看起来像 UI 在抽搐。持续 [BufferingShowDelayMs] 才认为「用户真的在等」，恢复时立刻降下。
+    var bufferingShown by remember { mutableStateOf(false) }
+
+    // key 用布尔值是故意的：缓冲在 400ms 内恢复时，协程被取消，
+    // 动画就完全不会出现——这正是要的效果，别改成记 tick。
+    LaunchedEffect(buffering) {
+        if (buffering) {
+            delay(BufferingShowDelayMs)
+            bufferingShown = true
+        } else {
+            bufferingShown = false
+        }
+    }
     // 左右键累计快进量：正向为正、倒退为负，用于箭头提示
     var seekAccumMs by remember { mutableLongStateOf(0L) }
     var seekHintTick by remember { mutableIntStateOf(0) }
@@ -1177,7 +1203,13 @@ fun PlayerScreen(
         // 缓冲指示：只在「还没有出画面」时显示。
         // 起播阶段（durationMs 仍为 0）已经由 PlayerUi.Loading 覆盖，
         // 这里再叠一个「正在加载…」就重复了，用户会觉得多余。
-        if (errorMessage == null && buffering && durationMs > 0L) {
+        // 显隐走淡入淡出（进场 160ms / 退场 220ms）：硬切会在每次卡顿时闪一下，
+        // 退场比进场慢一点，是因为「突然消失」比「慢慢出现」更刺眼。
+        AnimatedVisibility(
+            visible = errorMessage == null && bufferingShown && durationMs > 0L,
+            enter = fadeIn(tween(160)),
+            exit = fadeOut(tween(220)),
+        ) {
             BufferingIndicator(modifier = Modifier.fillMaxSize())
         }
 
