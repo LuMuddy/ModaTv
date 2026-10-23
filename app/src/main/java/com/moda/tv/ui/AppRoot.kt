@@ -104,9 +104,13 @@ fun AppRoot() {
             is Dest.History -> HistoryRoute(vm)
             is Dest.Completed -> CompletedRoute(vm)
             is Dest.Favorites -> FavoritesRoute(vm)
-            is Dest.Settings -> SettingsRoute(vm, onOpenCopyright = { manualCopyright = true })
-            // 版权声明入口在设置菜单页，不在任何子页里，所以子页路由不需要这个回调
-            is Dest.SettingsGroup -> SettingsGroupRoute(vm, dest.group)
+            is Dest.Settings -> SettingsRoute(vm)
+            // 版权声明的常驻入口在「关于」子页的最后一行，所以只有子页路由需要这个回调
+            is Dest.SettingsGroup -> SettingsGroupRoute(
+                vm = vm,
+                group = dest.group,
+                onOpenCopyright = { manualCopyright = true },
+            )
             is Dest.Detail -> DetailRoute(vm, dest)
             is Dest.Player -> PlayerRoute(vm)
         }
@@ -285,7 +289,7 @@ private fun FavoritesRoute(vm: TvViewModel) {
  * 所以保存之后不需要重启应用——屏幕上的地址就是正在用的地址。
  */
 @Composable
-private fun SettingsRoute(vm: TvViewModel, onOpenCopyright: () -> Unit) {
+private fun SettingsRoute(vm: TvViewModel) {
     val apiBase by vm.apiBase.collectAsStateWithLifecycle()
     SettingsScreen(
         apiBase = apiBase,
@@ -295,7 +299,6 @@ private fun SettingsRoute(vm: TvViewModel, onOpenCopyright: () -> Unit) {
         onClearHistory = vm::clearHistory,
         onClearFavorites = vm::clearFavorites,
         onClearSearchHistory = vm::clearSearchHistory,
-        onOpenCopyright = onOpenCopyright,
         onOpenGroup = { group -> vm.push(Dest.SettingsGroup(group)) },
         // 播放设置改走 VM 的写入口：写操作跑在 viewModelScope 上，
         // 用户改完立刻按返回也不会把这次写连同组合一起取消掉
@@ -314,6 +317,7 @@ private fun SettingsRoute(vm: TvViewModel, onOpenCopyright: () -> Unit) {
 private fun SettingsGroupRoute(
     vm: TvViewModel,
     group: SettingsSectionId,
+    onOpenCopyright: () -> Unit,
 ) {
     val apiBase by vm.apiBase.collectAsStateWithLifecycle()
     when (group) {
@@ -329,8 +333,8 @@ private fun SettingsGroupRoute(
             onClearFavorites = vm::clearFavorites,
             onClearSearchHistory = vm::clearSearchHistory,
         )
-        // 关于子页没有可点行：版权声明入口在菜单页上，不需要这个回调
-        SettingsSectionId.About -> AboutSettingsSection()
+        // 关于子页唯一可点的一行就是版权声明入口
+        SettingsSectionId.About -> AboutSettingsSection(onOpenCopyright = onOpenCopyright)
     }
 }
 

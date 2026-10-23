@@ -641,20 +641,32 @@ internal fun NetworkSettingsSection(
 // ==================== 三、关于 ====================
 
 /**
- * 关于子页：全是只读信息，没有一行可点。
+ * 关于子页：五行只读信息 + 一行版权声明入口。
  *
- * 版权声明入口不在这里，而在顶层菜单页：它和「播放/网络/关于」三个分组不是一回事
- * （那三张卡是"进去改东西"，它是一次性查看），混进关于子页会让"关于"既有可点又有不可点。
+ * 版权声明入口放在这里而不是顶层菜单页：菜单页那三张卡是"进去改东西"，
+ * 而这一页本来就是"看看这软件是什么"，用户想回看声明时第一反应是来这里找版本号旁边。
+ * 既然本页出现了一行可点的，它就必须是**唯一**可聚焦的那一行——
+ * 上面五行纯展示行不带箭头也不可聚焦（SettingRow 的 onClick 为 null 就是裸 Box），
+ * 遥控器按下键会直接落到它身上，不会在只读行之间空转。
  */
 @Composable
 internal fun AboutSettingsSection(
+    /** 重看版权声明；真正的弹窗挂在 AppRoot 上，与启动时自动弹出的那一个是同一个 */
+    onOpenCopyright: () -> Unit,
     versionName: String = BuildConfig.VERSION_NAME,
     versionCode: Int = BuildConfig.VERSION_CODE,
 ) {
-    SettingsSectionScaffold(title = stringResource(SettingsSectionId.About.titleRes)) { columnFocus ->
+    // 本页唯一可聚焦的一行就是版权声明，首焦点直接给它：与其它两个子页同一个理由
+    // （不给的话从菜单页进来屏幕上一个白圈都没有，用户得先乱按一下方向键才找得到光标）。
+    // 代价是进页面时滚动会把它摆到舒适位置，最上面的「应用名称」被推出视口一点点。
+    val firstFocus = remember { FocusRequester() }
+    SettingsSectionScaffold(
+        title = stringResource(SettingsSectionId.About.titleRes),
+        firstFocus = firstFocus,
+    ) { columnFocus ->
         SectionCard {
             // 纯展示行不带箭头：让「能点」与「不能点」一眼可分。
-            // 这一页一行都不可聚焦（R9 有意为之），itemModifier 挂在行外壳上不会触发，
+            // 这五行不可聚焦，itemModifier 挂在行外壳上不会触发，
             // 但保持与其它两个子页同一套写法，将来某行变成可点时不必再回来补。
             SettingRow(
                 stringResource(R.string.settings_about_app_name), "ModaTV",
@@ -675,6 +687,14 @@ internal fun AboutSettingsSection(
             SettingRow(
                 stringResource(R.string.settings_about_resolution), resolutionText(),
                 modifier = Modifier.then(columnFocus.itemModifier(4)),
+            )
+            SettingRow(
+                label = stringResource(R.string.copyright_title),
+                value = stringResource(R.string.settings_copyright_value),
+                chevron = true,
+                focusRequester = firstFocus,
+                onClick = onOpenCopyright,
+                modifier = Modifier.then(columnFocus.itemModifier(5)),
             )
         }
     }
@@ -941,9 +961,14 @@ internal fun SettingRow(
                     .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
                     .onFocusChanged { focused = it.isFocused },
                 shape = CardDefaults.shape(shape = RoundedCornerShape(10.dp)),
+                // 白底与描边同样由本行的 focused 直接给，不交给 Card 内部的焦点态。
+                // 实测的坑：从菜单页进子页时，焦点是随着新页面一起上树的那一帧就给到的，
+                // tv-material 的 Card 有时收不到这次焦点 —— 于是 content 走的是聚焦配色
+                // （近黑的字），卡片却仍是未聚焦的透明底，整行黑字贴黑底，屏幕上等于没字。
+                // 底下的 border/focusedBorder 是同一份颜色，两处一致，画两遍也看不出差别。
                 colors = CardDefaults.colors(
-                    containerColor = Color.Transparent,
-                    contentColor = ModaColors.Text,
+                    containerColor = if (focused) ModaColors.Focus else Color.Transparent,
+                    contentColor = if (focused) ModaColors.Bg else ModaColors.Text,
                     focusedContainerColor = ModaColors.Focus,
                     focusedContentColor = ModaColors.Bg,
                     pressedContainerColor = ModaColors.AccentSoft,
@@ -953,7 +978,11 @@ internal fun SettingRow(
                 // 滚动容器里靠白圈表达焦点就够了。
                 scale = CardDefaults.scale(scale = 1f, focusedScale = 1f, pressedScale = 1f),
                 border = CardDefaults.border(
-                    border = Border.None,
+                    border = if (focused) {
+                        Border(BorderStroke(3.dp, ModaColors.Focus), RingInset)
+                    } else {
+                        Border.None
+                    },
                     focusedBorder = Border(BorderStroke(3.dp, ModaColors.Focus), RingInset),
                 ),
             ) {

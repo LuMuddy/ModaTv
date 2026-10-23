@@ -83,8 +83,6 @@ fun SettingsScreen(
     onClearHistory: () -> Unit,
     onClearFavorites: () -> Unit,
     onClearSearchHistory: () -> Unit,
-    /** 重看版权声明；真正的弹窗挂在 AppRoot 上，和启动时自动弹出的那一个是同一个 */
-    onOpenCopyright: () -> Unit = {},
     /** 点分组卡：参数就是该进哪一页 */
     onOpenGroup: (SettingsSectionId) -> Unit,
     versionName: String = BuildConfig.VERSION_NAME,
@@ -180,21 +178,9 @@ fun SettingsScreen(
                 onClick = { onOpenGroup(SettingsSectionId.About) },
                 modifier = Modifier.then(columnFocus.itemModifier(2)),
             )
-
-            // 版权声明常驻入口：启动弹窗一闪而过，用户想回看时得有地方能找。
-            // 放在菜单页而不是「关于」子页，是因为它是一次性查看而非一类设置；
-            // 行样式与子页 SettingRow 完全同源，圆角/底色由 SectionCard 统一给。
-            // 外层 Box 只为挂跟焦：SectionCard 只接 content，没有 modifier 位。
-            Box(Modifier.fillMaxWidth().then(columnFocus.itemModifier(3))) {
-                SectionCard {
-                    SettingRow(
-                        label = stringResource(R.string.copyright_title),
-                        value = stringResource(R.string.settings_copyright_value),
-                        chevron = true,
-                        onClick = onOpenCopyright,
-                    )
-                }
-            }
+            // 版权声明入口不在这一页，而在「关于」子页的最后一行：
+            // 启动弹窗一闪而过，用户想回看时第一反应是去「关于」里找版本号旁边。
+            // 菜单页只保留三张「进去改东西」的分组卡，与本页职责（回答「想改哪一类」）一致。
         }
     }
 }
