@@ -113,7 +113,7 @@ private fun SeekHint(accumMs: Long, modifier: Modifier = Modifier) {
             )
             Spacer(Modifier.width(12.dp))
             Text(
-                text = "秒 " + seconds,
+                text = seconds.toString() + " 秒",
                 style = TvBody.copy(fontSize = 30.sp),
                 color = Color.White.copy(alpha = 0.92f),
             )
@@ -854,12 +854,17 @@ fun PlayerScreen(
     // 快进/快退时不要弹整块 OSD：用户只是想跳一段，不需要看到所有菜单。
     // 改为一个居中飘出的箭头 + 累计秒数，松手后自然消失，画面保持干净。
     fun seekBy(deltaMs: Long) {
-        val target = (engine.positionMs + deltaMs)
+        val from = engine.positionMs
+        val target = (from + deltaMs)
             .coerceAtLeast(0L)
             .let { if (durationMs > 0) it.coerceAtMost(durationMs) else it }
+        // 累计的是「实际跳了多远」，不是按键请求的距离：片头/片尾被夹住时按 10 秒只走 3 秒，
+        // 提示却报 10 秒就是在骗人。实际位移为 0 就别 seek，也别刷新提示——到头了不该再飘数字。
+        val actual = target - from
+        if (actual == 0L) return
         engine.seekTo(target)
         positionMs = target
-        seekAccumMs += deltaMs
+        seekAccumMs += actual
         seekHintTick++
     }
 
