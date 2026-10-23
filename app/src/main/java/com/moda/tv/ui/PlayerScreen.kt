@@ -1028,8 +1028,8 @@ fun PlayerScreen(
             .fillMaxSize()
             .background(Color.Black)
             .onKeyEvent { event ->
-                // 片头/片尾：按下即记录，按住越过阈值则清除。
-                // 两个动作都挂在 DOWN 上——遥控器的 UP 不保证送达，
+                // 片头/片尾：按下即记录，重按一次就是重新量。
+                // 动作挂在 DOWN 上——遥控器的 UP 不保证送达，
                 // 挂在 UP 上会变成「按下没反应」；重复事件只吞掉，不重复记录
                 val isCenterKey = event.key == Key.DirectionCenter || event.key == Key.Enter
                 val markSlot = focusedSlot.takeIf {
