@@ -40,6 +40,8 @@ import androidx.tv.material3.Border
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
 import com.moda.tv.model.LibraryEntry
+import com.moda.tv.ui.components.ListMetrics
+import com.moda.tv.ui.components.listItemInset
 import com.moda.tv.ui.components.ActionButton
 import com.moda.tv.ui.components.RemoteImage
 import com.moda.tv.ui.theme.ModaColors
@@ -112,7 +114,7 @@ fun FavoritesScreen(
                 columns = GridCells.Fixed(4),
                 modifier = Modifier.fillMaxSize(),
                 // 同历史页：四周留出聚焦放大的余量，否则卡片选中时顶部与左右会被裁掉
-                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 32.dp),
+                contentPadding = ListMetrics.gridContentPadding(top = 16.dp, side = 20.dp),
                 horizontalArrangement = Arrangement.spacedBy(20.dp),
                 verticalArrangement = Arrangement.spacedBy(22.dp),
             ) {
@@ -183,6 +185,9 @@ private fun FavoriteCard(
             onClick = onOpen,
             modifier = Modifier
                 .fillMaxWidth()
+                // 聚焦放大 1.08 的溢出必须落在项自己的布局里，
+                // 否则会被 LazyGrid 视口裁掉（白边下沿被切平）。见 ListMetrics.ItemFocusInset
+                .listItemInset()
                 .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier),
             shape = CardDefaults.shape(shape = RoundedCornerShape(corner)),
             colors = CardDefaults.colors(
