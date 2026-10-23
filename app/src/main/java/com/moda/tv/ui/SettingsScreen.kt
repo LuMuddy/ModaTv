@@ -21,12 +21,10 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -44,6 +42,8 @@ import com.moda.tv.BuildConfig
 import com.moda.tv.R
 import com.moda.tv.data.SaveOutcome
 import com.moda.tv.data.local.PlayerSettings
+import com.moda.tv.ui.components.TvColumnFocusScroll
+import com.moda.tv.ui.components.TvFirstFocus
 import com.moda.tv.ui.theme.ModaColors
 import com.moda.tv.ui.theme.TvBody
 import com.moda.tv.ui.theme.TvCaption
@@ -100,12 +100,9 @@ fun SettingsScreen(
     val settings = holder.value
     // 首焦点落在第一张分组卡上。不请求的话，从首页工具栏按进本页时焦点是空的：
     // 上一页那个图标节点已经离开组合，屏幕上没有任何白圈，用户得先乱按一下方向键找光标。
+    // 抢焦点统一交给 TvFirstFocus（等两帧、失败不抛），不再在这里手写重试。
     val firstFocus = remember { FocusRequester() }
-    LaunchedEffect(Unit) {
-        withFrameNanos { }
-        withFrameNanos { }
-        runCatching { firstFocus.requestFocus() }
-    }
+    TvFirstFocus(firstFocus)
 
     Column(
         Modifier
@@ -130,6 +127,14 @@ fun SettingsScreen(
         // 滚动位置立刻被重置。三张卡在 1080p 上一屏就放得下，这里保留滚动只是兜住
         // 更小的分辨率与将来加第四组的情况。
         val scrollState = rememberScrollState()
+        // 非懒容器的跟焦（见 Common.kt 的 TvColumnFocusScroll）：每一行自己上报位置，
+        // 缺多少补多少、scrollBy 立即到位。
+        //
+        // 为什么不靠 Compose 默认的 bring-into-view：它只把目标滚到"刚好露出来"。
+        // 实测故障——焦点在 A（第一张卡）时顶部正确，按下到 B 整页下移，再按上回 A，
+        // A 停在"刚露出"的位置，顶部留白再也回不来。这里按坐标双向算差值，
+        // A 的 top 越过 comfort 就给出负 delta，正好把滚动量退回 0。
+        val columnFocus = TvColumnFocusScroll(scrollState)
         Column(
             Modifier
                 .fillMaxWidth()
@@ -137,9 +142,13 @@ fun SettingsScreen(
                 // 滚动视口比可见区域高一截，最后一张卡连同底部留白永远滚不出来。
                 // 也不能换成 fillMaxSize()——那会把高度钉死成内容高度，反而没有滚动余量。
                 .weight(1f)
+                // 视口修饰符必须写在 .verticalScroll **之前**：写在后面量到的是跟随滚动的
+                // 内层内容，视口上下沿会跟着一起跑，等于没量。
+                .then(columnFocus.viewportModifier)
                 .verticalScroll(scrollState)
-                // 底部留白属于滚动内容：最后一张卡聚焦时会画 3dp 描边，贴底会被裁掉；
-                // 顶部同样留一档，聚焦行不贴标题
+                // 顶部 16dp 与 TvColumnFocusScroll 的 comfort 取同一个值：
+                // 第一行聚焦时差值正好为 0，页面停在 offset 0，与刚进页面时像素一致。
+                // 底部 40dp 属于滚动内容：最后一张卡聚焦时要画 3dp 白圈，贴底会被裁掉。
                 .padding(top = 16.dp, bottom = 40.dp),
             // 卡片缝隙已由每张卡外侧的 RingRoom 提供（2×8dp=16dp），这里不再叠加，
             // 否则三张卡之间会比卡片内行距宽出两倍。
@@ -153,6 +162,7 @@ fun SettingsScreen(
                     stringResource(settings.decoderMode.labelRes) + " · " +
                     speedLabelOf(settings.defaultSpeed),
                 onClick = { onOpenGroup(SettingsSectionId.Playback) },
+                modifier = Modifier.then(columnFocus.itemModifier(0)),
             )
             SettingsEntryCard(
                 title = stringResource(SettingsSectionId.Network.titleRes),
@@ -161,24 +171,29 @@ fun SettingsScreen(
                 // 想看全的进子页——那里才是逐字可读的地方
                 summary = apiBase,
                 onClick = { onOpenGroup(SettingsSectionId.Network) },
+                modifier = Modifier.then(columnFocus.itemModifier(1)),
             )
             SettingsEntryCard(
                 title = stringResource(SettingsSectionId.About.titleRes),
                 desc = stringResource(SettingsSectionId.About.descRes),
                 summary = "ModaTV " + versionName,
                 onClick = { onOpenGroup(SettingsSectionId.About) },
+                modifier = Modifier.then(columnFocus.itemModifier(2)),
             )
 
             // 版权声明常驻入口：启动弹窗一闪而过，用户想回看时得有地方能找。
             // 放在菜单页而不是「关于」子页，是因为它是一次性查看而非一类设置；
             // 行样式与子页 SettingRow 完全同源，圆角/底色由 SectionCard 统一给。
-            SectionCard {
-                SettingRow(
-                    label = stringResource(R.string.copyright_title),
-                    value = stringResource(R.string.settings_copyright_value),
-                    chevron = true,
-                    onClick = onOpenCopyright,
-                )
+            // 外层 Box 只为挂跟焦：SectionCard 只接 content，没有 modifier 位。
+            Box(Modifier.fillMaxWidth().then(columnFocus.itemModifier(3))) {
+                SectionCard {
+                    SettingRow(
+                        label = stringResource(R.string.copyright_title),
+                        value = stringResource(R.string.settings_copyright_value),
+                        chevron = true,
+                        onClick = onOpenCopyright,
+                    )
+                }
             }
         }
     }
@@ -197,6 +212,8 @@ private fun SettingsEntryCard(
     summary: String,
     onClick: () -> Unit,
     focusRequester: FocusRequester? = null,
+    /** 给外层 Box 用：挂 TvColumnFocusScroll 的 itemModifier（量整卡外壳） */
+    modifier: Modifier = Modifier,
 ) {
     var focused by remember { mutableStateOf(false) }
 
@@ -210,7 +227,7 @@ private fun SettingsEntryCard(
     // 外层透明 padding 提供圈的外扩空间，圈画在 padding 里，
     // 滚动视口就切不到它（tv-material 的 Border.inset 是向外扩的）。
     Box(
-        Modifier
+        modifier
             .fillMaxWidth()
             .padding(RingRoom),
     ) {

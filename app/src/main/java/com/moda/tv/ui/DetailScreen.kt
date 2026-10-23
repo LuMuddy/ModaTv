@@ -45,10 +45,13 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.moda.tv.R
+import com.moda.tv.model.AppError
 import com.moda.tv.model.Episode
 import com.moda.tv.model.SeriesDetail
 import com.moda.tv.model.Tier
@@ -63,6 +66,9 @@ import com.moda.tv.ui.components.EpisodeChip
 import com.moda.tv.ui.components.LoadingState
 import com.moda.tv.ui.components.RemoteImage
 import com.moda.tv.ui.components.SectionTitle
+import com.moda.tv.ui.components.appErrorText
+import com.moda.tv.ui.components.TvColumnFocusScroll
+import com.moda.tv.ui.components.TvFirstFocus
 import com.moda.tv.ui.components.TvRowFocusScroll
 import androidx.tv.material3.Border
 import androidx.tv.material3.Button
@@ -160,7 +166,8 @@ private suspend fun LazyListState.scrollToCentered(index: Int) {
 fun DetailScreen(
     detail: SeriesDetail?,
     loading: Boolean,
-    error: String?,
+    /** 数据层错误码（TvViewModel.detailError 同型）：文案一律由 [appErrorText] 按当前语言渲染 */
+    error: AppError?,
     onPlay: (Episode) -> Unit,
     onTierSelect: (Tier) -> Unit,
     selectedTier: Tier?,
@@ -180,6 +187,8 @@ fun DetailScreen(
     completedIndexes: Set<Int> = emptySet(),
 ) {
     val ctaFocus = remember { FocusRequester() }
+    // 错误态 / 空态里唯一的可点项是「重试 / 重新加载」，它必须拿到焦点（R9）
+    val retryFocus = remember { FocusRequester() }
     // 选集轨道的滚动状态。每次进详情页都是一份新的 composition，
     // 所以「居中」每次加载都会重来一次，不会记住上一次的滚动位置
     val railState = rememberLazyListState()
@@ -245,18 +254,24 @@ fun DetailScreen(
     // 首屏就在眼前，落在那里页面一动不动，而且它本来就是这页唯一的主操作。
     //
     // 因此历史落点与焦点彻底解耦：历史只决定「哪一格显示为选中」+「轨道滚到哪一格居中」。
-    // 等布局落地再 requestFocus，否则目标还没 compose 出来会抛且焦点永远不落。
-    LaunchedEffect(detail?.cid, episodes.size) {
-        if (episodes.isEmpty()) return@LaunchedEffect
-        withFrameNanos { }
-        runCatching { ctaFocus.requestFocus() }
-    }
+    // key 只认「哪一部剧」+「有没有拿到集数」，不跟 episodes.size 走：
+    // 刷新时多返回几集不该把已经移到选集轨道上的焦点拽回主按钮。
+    // episodes 为空时主按钮根本没上树，TvFirstFocus 内部 runCatching 接住这次失败，
+    // 等集数到达（isEmpty 翻成 false）它会再来一遍 —— 不再有"只等一帧、失败就永久放弃"。
+    // 用户自己点过之后（userTouched）传 null 停掉这条自动抢焦，免得跟用户抢。
+    TvFirstFocus(
+        requester = if (userTouched) null else ctaFocus,
+        key = detail?.cid to episodes.isEmpty(),
+    )
 
     // 历史落点：只滚轨道，不碰焦点。
     // 历史还在读盘时直接返回、**不猜第 1 集**；等 loaded 变 true 让本 effect 重跑一次再落位。
     // 每次进详情页都是新 composition，didPlaceByResume 随之重置，所以这是"每次加载都重新居中"。
     LaunchedEffect(detail?.cid, episodes.size, resume?.loaded, resumeIndex) {
-        if (!showRail || userTouched) return@LaunchedEffect
+        // railFocusedIndex >= 0 也算"用户已经操作过"：焦点只要进过轨道，
+        // 晚到的历史就不许再把轨道从用户当前聚焦的那一集下面滚走——不然光标会跟着
+        // 页面一起平移，用户按了下键却停在了另一集上。
+        if (!showRail || userTouched || railFocusedIndex >= 0) return@LaunchedEffect
         if (resume?.loaded != true) return@LaunchedEffect
         if (didPlaceByResume) return@LaunchedEffect
         didPlaceByResume = true
@@ -274,27 +289,50 @@ fun DetailScreen(
         onPlay(ep)
     }
 
+    // 这两种态（detail 还是 null）下的首焦点：等数据落定再抢，抢不到不抛
+    TvFirstFocus(retryFocus, key = if (detail == null) error to loading else null)
+
+    // 纵向只有这一个滚动容器，跟焦交回 TvColumnFocusScroll（与设置页同一套）：
+    // 主 CTA 与选集轨道之间上下移动时，页面靠"按坐标双向补差值"回到原位，
+    // 而不是靠 Compose 默认的"刚好露出来"——那一套从 A 按下到 B 再按回 A 就回不去。
+    val pageScroll = rememberScrollState()
+    val columnFocus = TvColumnFocusScroll(pageScroll)
+
     // 规则 3：容器与屏幕底边之间留安全边，否则光标停在中间行时聚焦/点击外扩会被切平
     Box(Modifier.fillMaxSize().background(ModaColors.Bg).listBottomSafe()) {
         when {
-            // 拿不到详情时也要留得下出口：有 onRetry 就重试，没有就返回上一页
-            detail == null && error != null -> ErrorState(error, onRetry = onRetry ?: onBack)
-            detail == null && loading -> LoadingState("正在拉取剧集…")
-            detail == null -> EmptyState("没有拿到剧集信息", onRetry = onRetry ?: onBack)
+            // 拿不到详情时也要留得下出口：有 onRetry 就重试，没有就返回上一页。
+            // retryFocus 必须传：这屏只有这一个按钮，焦点不在它上面等于按确认没反应（R9）
+            detail == null && error != null -> ErrorState(
+                message = appErrorText(error),
+                onRetry = onRetry ?: onBack,
+                retryFocus = retryFocus,
+            )
+            detail == null && loading -> LoadingState(stringResource(R.string.detail_loading))
+            detail == null -> EmptyState(
+                message = stringResource(R.string.detail_empty),
+                onRetry = onRetry ?: onBack,
+                retryFocus = retryFocus,
+            )
             else -> Column(
                 // 整页只有一个纵向滚动容器：页头 + 单行选集轨道 + 底部提示。
                 // 纵轴只有这一层，横轴交给轨道自己的 LazyRow——
                 // 两层都吃上下键的话，遥控器上会突然滚掉整页，或者焦点卡在边界不回头。
                 modifier = Modifier
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
+                    // 视口修饰符必须在 .verticalScroll 之前，否则量到的是跟随滚动的内层内容
+                    .then(columnFocus.viewportModifier)
+                    .verticalScroll(pageScroll)
                     .padding(top = 32.dp, bottom = ListMetrics.TailPad),
             ) {
                 // 左图右信息：电视上竖版海报配剧名比纯文字更像一个详情页
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = ListMetrics.SidePad),
+                        .padding(horizontal = ListMetrics.SidePad)
+                        // 页头（海报 + 标题 + 主 CTA）整体作为第 0 个跟焦行：
+                        // 焦点落在它内部的任何控件上都算这一行，补滚以整块为准
+                        .then(columnFocus.itemModifier(0)),
                 ) {
                     RemoteImage(
                         url = detail.cover,
@@ -308,7 +346,7 @@ fun DetailScreen(
                     Column(Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                text = detail.title.ifBlank { "未命名剧集" },
+                                text = detail.title.ifBlank { stringResource(R.string.detail_untitled) },
                                 style = TvTitle,
                                 color = ModaColors.Text,
                                 maxLines = 2,
@@ -326,7 +364,11 @@ fun DetailScreen(
                         // 只有一集时它是整页唯一的播放入口——下面不会再有选集。
                         if (episodes.isNotEmpty()) {
                             PlayCtaButton(
-                                text = if (hasResume) "继续播放 ${continueProgress}" else "播放",
+                                text = if (hasResume) {
+                                    stringResource(R.string.detail_continue_play, continueProgress)
+                                } else {
+                                    stringResource(R.string.detail_play)
+                                },
                                 modifier = Modifier.focusRequester(ctaFocus),
                                 onClick = {
                                     // 有断点从断点那一集起播，没断点从第 1 集起播。
@@ -357,7 +399,7 @@ fun DetailScreen(
 
                 if (episodes.isEmpty()) {
                     Text(
-                        "该剧没有返回任何集数",
+                        stringResource(R.string.detail_no_episodes),
                         style = TvBody,
                         color = ModaColors.Danger,
                         modifier = Modifier.padding(start = ListMetrics.SidePad, top = 26.dp),
@@ -370,10 +412,10 @@ fun DetailScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.padding(horizontal = ListMetrics.SidePad),
                     ) {
-                        SectionTitle("选集")
+                        SectionTitle(stringResource(R.string.detail_episodes_title))
                         Spacer(Modifier.width(12.dp))
                         Text(
-                            "${episodes.size} 集",
+                            stringResource(R.string.detail_episode_count, episodes.size),
                             style = TvCaption.copy(fontSize = 16.sp),
                             color = ModaColors.TextDim,
                         )
@@ -384,11 +426,20 @@ fun DetailScreen(
                     LazyRow(
                         state = railState,
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        // 纵向 8dp 兜住聚焦放大 1.08 的溢出（纵向不滚，不会被吃掉）；
+                        // 纵向 14dp：R2 要求上下各留 12~16dp 呼吸空间，被聚焦的格子不贴轨道边
+                        //（原先的 8dp 只是兜住那套已废除的聚焦放大溢出）。
                         // 横向 SidePad 挪到视口之外：留在 contentPadding 里的话，
                         // 按「左」回到第 1 集时这 48dp 会被滚掉，首格与页头对不齐。
-                        contentPadding = PaddingValues(vertical = 8.dp),
-                        modifier = Modifier.fillMaxWidth().railScrollRoom(ListMetrics.SidePad),
+                        contentPadding = PaddingValues(vertical = 14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .railScrollRoom(ListMetrics.SidePad)
+                            // 第 1 个跟焦行：整条轨道。焦点在轨道里左右移动时 hasFocus 一直为 true，
+                            // 跟焦不会插手；只有上下进出才需要整页补滚（见 TvColumnFocusScroll）。
+                            .then(columnFocus.itemModifier(1))
+                            // 离开轨道把下标清回 -1：它同时是"焦点不在轨道上"与
+                            // "用户还没动过轨道"两个判断的依据（见历史落位那条 effect）
+                            .onFocusChanged { st -> if (!st.hasFocus) railFocusedIndex = -1 },
                     ) {
                         items(count = episodes.size, key = { i -> "ep-${episodes[i].vid}-$i" }) { index ->
                             val ep = episodes[index]
@@ -435,7 +486,7 @@ fun DetailScreen(
                         if (loading) {
                             Spacer(Modifier.height(24.dp))
                             Text(
-                                "正在刷新…",
+                                stringResource(R.string.detail_refreshing),
                                 style = TvCaption.copy(fontSize = 16.sp),
                                 color = ModaColors.TextDim,
                             )
@@ -443,12 +494,15 @@ fun DetailScreen(
                         // 已有内容时的刷新失败不该盖住整页，只在底部提示并给重试
                         if (error != null) {
                             Spacer(Modifier.height(24.dp))
-                            Text(error, style = TvBody, color = ModaColors.Danger)
+                            Text(appErrorText(error), style = TvBody, color = ModaColors.Danger)
                             Spacer(Modifier.height(12.dp))
                             ActionButton(
-                                text = "重试",
+                                text = stringResource(R.string.detail_retry),
                                 onClick = { onRetry?.invoke() ?: onBack() },
                                 primary = true,
+                                // 它在页面的纵向滚动容器里，放大只改绘制不改布局，
+                                // 聚焦时白框会被视口切掉——R1 的放大例外只留给无滚动容器的裸按钮
+                                focusedScale = 1f,
                             )
                         }
                     }
@@ -489,7 +543,10 @@ private fun PlayCtaButton(
             pressedContainerColor = ModaColors.AccentSoft,
             pressedContentColor = Color.White,
         ),
-        scale = ButtonDefaults.scale(scale = 1f, focusedScale = 1.06f),
+        // 不放大：R1 不许用 scale 表达焦点（scale 只改绘制不改布局，纵向滚动容器会把
+        // 溢出的那 6% 裁平，白框边沿缺一条边）。焦点只靠底色变化 + 3dp 白描边表达，
+        // 与 HistoryScreen 的卡片、设置页的行同一套。
+        scale = ButtonDefaults.scale(scale = 1f, focusedScale = 1f),
         border = ButtonDefaults.border(
             // 未聚焦也留一圈亮蓝：主 CTA 在静态画面上也要比选集卡显眼
             border = Border(border = BorderStroke(2.dp, ModaColors.AccentSoft), shape = RoundedCornerShape(corner)),
@@ -537,7 +594,7 @@ private fun CompletedBadge(modifier: Modifier = Modifier) {
         Icon(
             imageVector = Icons.Filled.CheckCircle,
             // 无障碍：图标没有文字，状态必须进描述
-            contentDescription = "已看完",
+            contentDescription = stringResource(R.string.detail_completed_desc),
             tint = CompletedGreen,
             modifier = Modifier.size(20.dp),
         )
@@ -580,7 +637,8 @@ private fun FavoriteIconButton(isFavorite: Boolean, onClick: () -> Unit) {
             pressedContainerColor = ModaColors.SurfaceHigh,
             pressedContentColor = if (isFavorite) FavoriteYellow else ModaColors.Text,
         ),
-        scale = IconButtonDefaults.scale(scale = 1f, focusedScale = 1.08f),
+        // 同样不放大：这一颗也在纵向滚动容器里（R1）
+        scale = IconButtonDefaults.scale(scale = 1f, focusedScale = 1f),
         border = IconButtonDefaults.border(
             border = Border.None,
             focusedBorder = Border(
@@ -592,7 +650,11 @@ private fun FavoriteIconButton(isFavorite: Boolean, onClick: () -> Unit) {
         Icon(
             imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
             // 无障碍：状态直接进描述，读屏用户不必靠颜色猜
-            contentDescription = if (isFavorite) "已收藏，点击取消收藏" else "收藏",
+            contentDescription = if (isFavorite) {
+                stringResource(R.string.detail_fav_remove_desc)
+            } else {
+                stringResource(R.string.detail_fav_add_desc)
+            },
             modifier = Modifier.size(30.dp),
             // 跟随 IconButton 的 contentColor（含聚焦反色的白底近黑心），不硬编码颜色
             tint = LocalContentColor.current,

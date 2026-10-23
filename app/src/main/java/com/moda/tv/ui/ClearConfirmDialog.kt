@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -28,6 +27,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.moda.tv.R
 import com.moda.tv.ui.components.ActionButton
+import com.moda.tv.ui.components.TvFirstFocus
 import com.moda.tv.ui.theme.ModaColors
 import com.moda.tv.ui.theme.TvBody
 import com.moda.tv.ui.theme.TvHeading
@@ -61,8 +61,10 @@ fun ClearConfirmDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
+        // 等两帧再抢（弹窗首帧布局未完成时 requestFocus 会抛），失败不抛：
+        // 手写 LaunchedEffect + 单次 requestFocus 的写法一次失败就再也不重试
         val cancelFocus = remember { FocusRequester() }
-        LaunchedEffect(Unit) { runCatching { cancelFocus.requestFocus() } }
+        TvFirstFocus(cancelFocus)
 
         // 宽度跟屏幕走：电视上 540dp 高的横屏里写死宽度容易被窗口裁掉
         val config = LocalConfiguration.current

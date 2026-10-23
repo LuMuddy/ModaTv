@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ==================== 清晰度档位名（TierName.Local → UI 侧 stringResource 解析） ====================
+         只有本地档位名进资源；上游 res（804P 这类）是数据，原样上屏不翻译。 -->
+    <string name="tier_name_source">原码</string>
+    <string name="tier_name_full">整片</string>
+
+    <!-- ==================== 手机端扫码配置页（LanConfigServer 渲染，手机浏览器里可见） ==================== -->
+    <string name="lan_banner_saved">已生效，可以关闭此页面</string>
+    <string name="lan_err_url_required">请输入代理网址</string>
+    <string name="lan_page_template_missing">页面模板缺失，请在电视端手动修改代理网址。</string>
+
+    <!-- ==================== 探活失败原因（ProbeFailure 只带资源 id，句子由 TvViewModel 取） ==================== -->
+    <string name="probe_http_status">接口返回 HTTP %1$s</string>
+    <string name="probe_empty_body">接口没有返回内容</string>
+    <string name="probe_not_json">该地址不是 ModaTV 接口（未返回 JSON）</string>
+    <string name="probe_rejected">该地址拒绝了探活请求</string>
+    <string name="probe_connect_failed">无法连接：%1$s</string>
+
+    <!-- ==================== 数据层错误补充（AppError → ErrorText.appErrorText） ==================== -->
+    <string name="err_storage">本地存储不可用，请稍后重试</string>
+</resources>

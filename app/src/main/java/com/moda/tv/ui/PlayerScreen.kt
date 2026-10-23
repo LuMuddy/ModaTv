@@ -32,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -54,10 +55,12 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.Player
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import com.moda.tv.R
 import com.moda.tv.data.local.AspectMode
 import com.moda.tv.data.local.AspectModes
 import com.moda.tv.data.local.DecoderMode
@@ -72,7 +75,10 @@ import com.moda.tv.data.local.PlayerSettingsStoreImpl
 import com.moda.tv.data.local.PlayerSpeedOptions
 import com.moda.tv.model.Danmaku
 import com.moda.tv.model.Episode
+import com.moda.tv.model.PlayerError
 import com.moda.tv.model.Tier
+import com.moda.tv.model.TierName
+import com.moda.tv.ui.player.tierNameText
 import com.moda.tv.ui.player.DanmakuItems
 import com.moda.tv.ui.player.DanmakuOverlay
 import com.moda.tv.ui.player.OsdSlot
@@ -82,6 +88,8 @@ import com.moda.tv.ui.player.PlayerErrorPane
 import com.moda.tv.ui.player.PlayerOsd
 import com.moda.tv.ui.player.adjustDanmaku
 import com.moda.tv.ui.player.visibleOsdSlots
+import com.moda.tv.ui.components.TvFirstFocus
+import com.moda.tv.ui.components.playerErrorText
 import com.moda.tv.ui.theme.TvBody
 import com.moda.tv.ui.theme.TvCaption
 import java.text.SimpleDateFormat
@@ -113,7 +121,7 @@ private fun SeekHint(accumMs: Long, modifier: Modifier = Modifier) {
             )
             Spacer(Modifier.width(12.dp))
             Text(
-                text = seconds.toString() + " 秒",
+                text = stringResource(R.string.player_seek_seconds, seconds),
                 style = TvBody.copy(fontSize = 30.sp),
                 color = Color.White.copy(alpha = 0.92f),
             )
@@ -180,6 +188,10 @@ private const val TickMs = 300L
 private const val ProgressReportMs = 1000L
 /** 长按多久算「要清除」，短于它按短按处理 */
 private const val MarkLongPressMs = 800L
+/** 焦点整页丢失后等多久再抢：窗口切换与布局变化常连着来，立刻抢会与同一帧的重组互相打断 */
+private const val FocusRegainDelayMs = 300L
+/** 不可用档提示的停留时间：要让用户看清并决定换哪档，又不至于一直挂着 */
+private const val TierHintMs = 2_500L
 
 /**
  * 「这一集以前播过」的判定阈值。
@@ -329,6 +341,11 @@ fun PlayerScreen(
     val useHls = fellBackToHls && hlsUrl != null
     val playUrl = if (useHls) hlsUrl!! else url
     val focusRequester = remember { FocusRequester() }
+    // 整页是否还握着焦点。播放页里只有一个 focusable（接收全部按键的那个 Box），
+    // 所以「没有焦点」就等于整页遥控全哑——这是必须能自己发现的状态，不能靠用户按出来
+    var pageFocused by remember { mutableStateOf(false) }
+    var focusEverGained by remember { mutableStateOf(false) }
+    var focusRegainTick by remember { mutableIntStateOf(0) }
 
     var playing by remember { mutableStateOf(false) }
     // 是否正在缓冲：控制加载动画的显隐
@@ -353,7 +370,8 @@ fun PlayerScreen(
     var positionMs by remember { mutableLongStateOf(startPositionMs) }
     var durationMs by remember { mutableLongStateOf(0L) }
     var bufferedMs by remember { mutableLongStateOf(0L) }
-    var errorMessage by remember(url, attempt) { mutableStateOf<String?>(null) }
+    // 只存错误码：文案在渲染点按当前语言取，否则系统语言切换后这条中文会一直挂着
+    var playError by remember(url, attempt) { mutableStateOf<PlayerError?>(null) }
     // 失败重试要接着上次位置播，而不是回到片头
     var resumeFrom by remember(url) { mutableLongStateOf(startPositionMs) }
     // 引擎没有 playbackState，播放到结尾这件事只能自己记：
@@ -368,6 +386,10 @@ fun PlayerScreen(
     var focusedSlot by remember { mutableStateOf(OsdSlot.Quality) }
     var tierPanelVisible by remember { mutableStateOf(false) }
     var focusedTierIndex by remember { mutableIntStateOf(0) }
+    // 不可用档位按下确认时的可见回执。applyTier 对不可用档只能拒绝（切过去是黑屏），
+    // 但静默 return 会让用户以为遥控器坏了——拒绝必须说出来，见 TierPanel 的 hint。
+    // 这里只存档位名（资源 id 或上游原文），整句文案在渲染点用当前语言拼，不与语言绑定
+    var unavailableTierName by remember { mutableStateOf<TierName?>(null) }
     // 倍速 / 弹幕 / 选集三块各自独立展开，任一展开都挂起 OSD 自动隐藏
     var speedPanelVisible by remember { mutableStateOf(false) }
     var focusedSpeedIndex by remember { mutableIntStateOf(0) }
@@ -507,6 +529,8 @@ fun PlayerScreen(
     fun anyPanelVisible(): Boolean = activePanelSlot() != null
 
     fun closePanels() {
+        // 提示是面板里的东西：面板关掉后它没有落脚点，留着只会在下次开面板时诈尸
+        unavailableTierName = null
         tierPanelVisible = false
         speedPanelVisible = false
         danmakuPanelVisible = false
@@ -634,8 +658,11 @@ fun PlayerScreen(
         when (slot) {
             OsdSlot.Danmaku ->
                 focusedDanmakuItem = (focusedDanmakuItem + delta).mod(DanmakuItems.size)
-            OsdSlot.Quality ->
+            OsdSlot.Quality -> {
                 focusedTierIndex = (focusedTierIndex + delta).mod(tiers.size.coerceAtLeast(1))
+                // 用户一动就是在换个档位试，上一条「不可用」回执该收走了
+                unavailableTierName = null
+            }
             else -> Unit
         }
         return true
@@ -678,17 +705,22 @@ fun PlayerScreen(
                 onEnded()
             }
 
-            override fun onError(message: String) {
+            override fun onError(error: PlayerError) {
                 // 直链先挂且有 HLS 兜底时静默切换：保住能看，比先弹报错体验好
                 if (!useHls && hlsUrl != null) {
                     val last = engine.positionMs
                     if (last > 0L) resumeFrom = last
                     fellBackToHls = true
-                    errorMessage = null
+                    playError = null
+                    osdVisible = true
                 } else {
-                    errorMessage = message
+                    playError = error
+                    // 错误面板是模态层：OSD 已经不画了（见下面 if (osdVisible && playError == null)），
+                    // 但浮窗的布尔值若还留着，返回键会先被那层看不见的浮窗吃掉——
+                    // 用户得按 2~3 次才有反应。进错误态就一次清干净，返回键一次生效。
+                    closePanels()
+                    osdVisible = false
                 }
-                osdVisible = true
             }
 
             override fun onVideoSizeChanged(width: Int, height: Int) {
@@ -834,7 +866,32 @@ fun PlayerScreen(
         osdVisible = false
     }
 
-    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+    // 首焦点：统一走 TvFirstFocus（内部等两帧再抢，失败不抛）。
+    // 老写法是进页面时一次性抢焦点、没有重试：首帧布局没完成时这一枪打空，
+    // 之后再也没有第二次，整页遥控永久哑掉（而画面看着完全正常）。
+    TvFirstFocus(focusRequester, key = focusRegainTick)
+
+    // 恢复路径只管一种情况：**整页一个焦点都没有**（下拉通知栏、切后台回来、
+    // 系统把焦点还给了别的窗口）。OSD 的显隐是自绘索引、不碰系统焦点树，所以两者不互抢；
+    // 冷启动那一次由上面的 TvFirstFocus 负责，这里不插手，避免两处同时抢焦点。
+    LaunchedEffect(pageFocused) {
+        if (pageFocused) {
+            focusEverGained = true
+            return@LaunchedEffect
+        }
+        if (!focusEverGained) return@LaunchedEffect
+        // 稍等一下再抢：窗口切换/布局变化常连着来，立刻抢容易和同一帧的重组互相打断
+        delay(FocusRegainDelayMs)
+        focusRegainTick++
+    }
+
+    // 不可用档的提示是一次回执，不是常驻状态：2.5 秒后自己收走，
+    // 否则它会一直挂在面板底部，用户以为这一档现在就是坏的
+    LaunchedEffect(unavailableTierName) {
+        if (unavailableTierName == null) return@LaunchedEffect
+        delay(TierHintMs)
+        unavailableTierName = null
+    }
 
     // 对齐到整分再刷新：OSD 展开期间每分钟只重组一次，不浪费帧
     LaunchedEffect(osdVisible) {
@@ -866,6 +923,31 @@ fun PlayerScreen(
         positionMs = target
         seekAccumMs += actual
         seekHintTick++
+    }
+
+    /**
+     * 上下键的唯一出口，三层从上到下：
+     *   L2 纵向浮窗 → 换子项/换档（横向浮窗不吃上下键，落到下一层）
+     *   L0 纯净播放（OSD 收起）→ **只把 OSD 唤出来**，槽位原地不动
+     *   L1 控制条层 → 先收起横向浮窗，再换槽位
+     *
+     * 中间那层是必须的：老实现无条件 closeActivePanel() + moveSlot()，而 moveSlot 是
+     * 取模循环，槽位表首尾正好是 Quality 与 Outro——OSD 收起时（默认停在 Quality）
+     * 按一次「上」就静默落到 Outro，紧接着的确认键直接 recordMark 写掉一条片尾记录。
+     * 用户只是想叫出 OSD，不许有任何持久化副作用。
+     */
+    fun dispatchVertical(delta: Int) {
+        if (movePanelFocus(delta)) {
+            showOsd()
+            return
+        }
+        if (!osdVisible) {
+            showOsd()
+            return
+        }
+        closeActivePanel()
+        moveSlot(delta)
+        showOsd()
     }
 
     /** 左右键的唯一出口：浮窗认键就交给浮窗，不认就静默，只有 L1/L0 才快进快退 */
@@ -919,7 +1001,7 @@ fun PlayerScreen(
     }
 
     fun togglePlay() {
-        if (errorMessage != null) return
+        if (playError != null) return
         if (engine.isPlaying) {
             engine.pause()
         } else {
@@ -934,14 +1016,22 @@ fun PlayerScreen(
 
     fun applyTier(index: Int) {
         val tier = tiers.getOrNull(index) ?: return
-        if (!tier.available) return
+        if (!tier.available) {
+            // 面板**不关**：既要让用户接着换档，也要让这行提示留在原地被看见
+            unavailableTierName = tier.display
+            return
+        }
+        unavailableTierName = null
         tierPanelVisible = false
         onTierChange(tier)
     }
 
     BackHandler {
         when {
-            // 分层退出：先关面板，再关 OSD，最后才离开播放页
+            // 分层退出：先关面板，再关 OSD，最后才离开播放页。
+            // 错误态排在最前：它是模态层，而且此时 OSD 已被隐藏，
+            // 让返回键先去关一层看不见的浮窗/OSD 等于「按了没反应」
+            playError != null -> onBack()
             anyPanelVisible() -> closePanels()
             osdVisible -> osdVisible = false
             else -> onBack()
@@ -959,7 +1049,7 @@ fun PlayerScreen(
                 // 挂在 UP 上会变成「按下没反应」；重复事件只吞掉，不重复记录
                 val isCenterKey = event.key == Key.DirectionCenter || event.key == Key.Enter
                 val markSlot = focusedSlot.takeIf {
-                    isCenterKey && osdVisible && errorMessage == null && !anyPanelVisible() &&
+                    isCenterKey && osdVisible && playError == null && !anyPanelVisible() &&
                         (it == OsdSlot.Intro || it == OsdSlot.Outro)
                 }
                 if (markSlot != null) {
@@ -976,10 +1066,10 @@ fun PlayerScreen(
                 // 焦点已离开片头/片尾时，任何按键都要撤销悬挂的长按计时
                 if (event.type == KeyEventType.KeyUp) cancelLongPress()
                 if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
-                if (errorMessage != null) {
+                if (playError != null) {
                     return@onKeyEvent when (event.key) {
                         Key.DirectionCenter, Key.Enter -> {
-                            errorMessage = null
+                            playError = null
                             attempt++
                             true
                         }
@@ -1075,32 +1165,24 @@ fun PlayerScreen(
                         true
                     }
                     Key.DirectionUp -> {
-                        // 纵向浮窗吃上下键（选档/选子项）；横向浮窗不吃——
-                        // 上下键此时表示「离开这一行」，先收起浮窗回 L1，再换槽位
-                        if (!movePanelFocus(-1)) {
-                            closeActivePanel()
-                            moveSlot(-1)
-                        }
-                        showOsd()
+                        dispatchVertical(-1)
                         true
                     }
                     Key.DirectionDown -> {
-                        if (!movePanelFocus(1)) {
-                            closeActivePanel()
-                            moveSlot(1)
-                        }
-                        showOsd()
+                        dispatchVertical(1)
                         true
                     }
                     else -> false
                 }
             }
     ) {
-        // 只承担焦点：真正接收按键的是外层 Box 的 onKeyEvent
+        // 只承担焦点：真正接收按键的是外层 Box 的 onKeyEvent。
+        // onFocusChanged 是「整页还有没有焦点」的唯一信号，恢复路径靠它触发
         Box(
             Modifier
                 .fillMaxSize()
                 .focusRequester(focusRequester)
+                .onFocusChanged { pageFocused = it.hasFocus }
                 .focusable()
         )
 
@@ -1153,7 +1235,7 @@ fun PlayerScreen(
             bottomRatio = settings.bottomRatio,
         )
 
-        if (osdVisible && errorMessage == null) {
+        if (osdVisible && playError == null) {
             PlayerOsd(
                 title = title,
                 episodeLabel = episodeLabel,
@@ -1167,6 +1249,9 @@ fun PlayerScreen(
                 tierPanelVisible = tierPanelVisible,
                 focusedTierIndex = focusedTierIndex,
                 modifier = Modifier.fillMaxSize(),
+                tierHint = unavailableTierName?.let {
+                    stringResource(R.string.player_tier_unavailable_hint, tierNameText(it))
+                },
                 settings = settings,
                 episodes = episodes,
                 currentEpisodeIndex = currentEpisodeIndex,
@@ -1211,7 +1296,7 @@ fun PlayerScreen(
         // 显隐走淡入淡出（进场 160ms / 退场 220ms）：硬切会在每次卡顿时闪一下，
         // 退场比进场慢一点，是因为「突然消失」比「慢慢出现」更刺眼。
         AnimatedVisibility(
-            visible = errorMessage == null && bufferingShown && durationMs > 0L,
+            visible = playError == null && bufferingShown && durationMs > 0L,
             enter = fadeIn(tween(160)),
             exit = fadeOut(tween(220)),
         ) {
@@ -1220,7 +1305,7 @@ fun PlayerScreen(
 
         if (fellBackToHls) {
             Text(
-                "已回退到 HLS 流",
+                stringResource(R.string.player_hls_fallback),
                 style = TvCaption,
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -1228,8 +1313,13 @@ fun PlayerScreen(
             )
         }
 
-        errorMessage?.let { message ->
-            PlayerErrorPane(message = message, retrying = false, modifier = Modifier.fillMaxSize())
+        playError?.let { error ->
+            // 只在这里把错误码翻成当前语言的文案：状态里存的是码，不是某种语言的字符串
+            PlayerErrorPane(
+                message = playerErrorText(error),
+                retrying = false,
+                modifier = Modifier.fillMaxSize(),
+            )
         }
     }
 }

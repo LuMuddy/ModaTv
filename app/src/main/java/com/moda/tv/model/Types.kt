@@ -1,5 +1,8 @@
 package com.moda.tv.model
 
+import androidx.annotation.StringRes
+import com.moda.tv.R
+
 /** 搜索/信息流条目（来自后端搜索响应的 items[].videoInfo.videoDoc/coverDoc） */
 data class VideoItem(
     val cid: String,
@@ -61,6 +64,21 @@ data class Episode(
         "http://puui.qpic.cn/vpic_cover/$vid/${vid}_hz.jpg/0"
 }
 
+/**
+ * 清晰度档位的显示名。
+ *
+ * 两种来源必须分开表达：上游 res（"804P" 这类）是数据，原样上屏、不翻译；
+ * 本地档位名（原码 / 整片）是文案，只能以资源 id 的形态出现——
+ * 数据层一旦固化成品句子，这句就再也没法跟着改词/多语言走。
+ */
+sealed interface TierName {
+    /** 上游给的原文，属于数据 */
+    data class Upstream(val text: String) : TierName
+
+    /** 需要按资源渲染的档位名 */
+    data class Local(@param:StringRes val resId: Int) : TierName
+}
+
 /** 清晰度档位（info.dtiers[]） */
 data class Tier(
     val fno: String,
@@ -70,15 +88,23 @@ data class Tier(
     val available: Boolean = true,
     val segCount: Int = 0,
 ) {
-    val displayName: String get() = when {
-        defn == "f0" -> "原码"
-        res.isNotBlank() -> res
-        else -> DEFN_RES[defn] ?: defn.ifBlank { "f$fno" }
+    /**
+     * 只回答「用哪条资源 / 哪段上游文本」，不返回成品句子。
+     * 句子由 UI 侧的 tierNameText 用 stringResource 取；不要在这里另写一份
+     * defn → 文案 的映射，那等于往数据层塞回第二份中文字典。
+     */
+    val display: TierName get() = when {
+        defn == "f0" -> TierName.Local(R.string.tier_name_source)
+        res.isNotBlank() -> TierName.Upstream(res)
+        defn == "p5" -> TierName.Local(R.string.tier_name_full)
+        // 上游既没给 res 也没有已知 defn 时退「自动」：f0/f1 这类内部代号不是给用户看的
+        else -> DEFN_RES[defn]?.let(TierName::Upstream) ?: TierName.Local(R.string.player_auto)
     }
+
     companion object {
+        /** 上游没给 res 时的分辨率兜底串：这是数据（270P…），不进资源、不翻译 */
         val DEFN_RES = mapOf(
             "sd" to "270P", "hd" to "480P", "shd" to "720P", "fhd" to "1080P",
-            "p5" to "整片", "f0" to "原码",
         )
     }
 }

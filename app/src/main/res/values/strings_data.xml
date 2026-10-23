@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ==================== 首页分类 tab（HomeTab.titleRes 一一对应，键名即 HomeTab 的枚举名小写） ==================== -->
+    <string name="tab_recommend">推荐</string>
+    <string name="tab_tv">电视剧</string>
+    <string name="tab_movie">电影</string>
+    <string name="tab_variety">综艺</string>
+    <string name="tab_cartoon">动漫</string>
+    <string name="tab_child">少儿</string>
+    <string name="tab_doco">纪录片</string>
+    <string name="tab_choice">精选</string>
+    <string name="tab_music">音乐</string>
+    <string name="tab_sports">体育</string>
+    <string name="tab_nba">NBA</string>
+    <string name="tab_game">游戏</string>
+    <string name="tab_auto">汽车</string>
+    <string name="tab_fashion">时尚</string>
+    <string name="tab_life">生活</string>
+    <string name="tab_art">艺术</string>
+    <string name="tab_pet">萌宠</string>
+    <string name="tab_podcast">播客</string>
+    <string name="tab_free">免费</string>
+
+    <!-- ==================== 数据层错误（AppError → ErrorText.appErrorText） ==================== -->
+    <string name="err_http">接口返回 HTTP %1$d，请稍后重试</string>
+    <string name="err_empty_payload">接口返回内容为空</string>
+    <string name="err_no_video">该剧集没有可取用的视频（可能是单片或已下架）</string>
+    <string name="err_empty_play_url">播放链接为空，请换一个清晰度重试</string>
+    <string name="err_upstream">接口返回异常，请稍后重试</string>
+    <string name="err_network">网络连接失败，请检查网络后重试</string>
+    <string name="err_unknown">加载失败，请稍后重试</string>
+
+    <!-- ==================== 播放内核错误（PlayerError → ErrorText.playerErrorText） ==================== -->
+    <string name="err_player_codec">解码失败，可在设置里换内核或解码方式后重试</string>
+    <string name="err_player_src">片源不可用或网络中断，请换清晰度或重试</string>
+    <string name="err_player_unknown">播放失败，请重试</string>
+</resources>

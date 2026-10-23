@@ -18,10 +18,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.moda.tv.R
 import com.moda.tv.data.local.AspectMode
 import com.moda.tv.data.local.AspectModes
-import com.moda.tv.ui.theme.ModaColors
-import com.moda.tv.ui.theme.TvBody
 import com.moda.tv.ui.theme.TvCaption
 
 /** 画面比例面板：左右键循环，选中即改 resizeMode，不重建播放器 */
@@ -35,14 +34,14 @@ fun AspectPanel(mode: AspectMode, focusedIndex: Int) {
             .border(1.dp, Color(0x33FFFFFF), shape)
             .padding(horizontal = 18.dp, vertical = 14.dp)
     ) {
-        Text("画面比例", style = TvCaption)
+        Text(stringResource(R.string.player_aspect_title), style = TvCaption)
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             AspectModes.forEachIndexed { index, option ->
                 val current = option == mode
                 val focused = index == focusedIndex
                 val chipShape = RoundedCornerShape(8.dp)
-                // 统一三态配色：焦点白底深字 / 选中蓝底白字 / 其余半透明
+                // 统一三态配色：焦点=3dp 白描边+提亮底 / 选中=蓝底+勾标 / 其余半透明
                 val cs = chipStyle(focused = focused, selected = current)
                 Box(
                     Modifier
@@ -51,12 +50,13 @@ fun AspectPanel(mode: AspectMode, focusedIndex: Int) {
                         .border(cs.borderWidth, cs.border, chipShape)
                         .padding(horizontal = 14.dp, vertical = 8.dp)
                 ) {
-                    Text(stringResource(option.labelRes), style = TvBody, color = cs.content)
+                    // 焦点（白框）与生效值（✓）是两个独立信号，见 ChipLabel 的注释
+                    ChipLabel(stringResource(option.labelRes), cs, current)
                 }
                 Spacer(Modifier.width(8.dp))
             }
         }
         Spacer(Modifier.height(6.dp))
-        Text("左右键切换，上下键离开；立即生效", style = TvCaption)
+        Text(stringResource(R.string.player_panel_hint_lr), style = TvCaption)
     }
 }

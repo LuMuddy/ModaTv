@@ -3,13 +3,16 @@ package com.moda.tv.data
 import android.util.Log
 import com.moda.tv.BuildConfig
 import com.moda.tv.model.*
+import java.io.IOException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.Request
 
@@ -20,6 +23,19 @@ import okhttp3.Request
 object Repo {
 
     private const val TAG = "Repo"
+
+    /**
+     * 把底层异常折算成结构化错误码：已经是 [ApiException] 就原样带上它的原因，
+     * 裸 IOException 说明卡在网络层，其余一律 Unknown。
+     *
+     * 这里绝不生成文案——中文/英文提示由 ui/components/ErrorText.kt 按系统语言取，
+     * 数据层一旦写死文案，切到英文就永远翻不回来。
+     */
+    private fun asAppError(e: Throwable): AppError = when {
+        e is ApiException -> e.error
+        e is IOException -> AppError.Network
+        else -> AppError.Unknown
+    }
 
     /** meta 单批上限：接口对 ids 长度敏感，app.js 也是 30 */
     private const val META_BATCH = 30
@@ -397,10 +413,10 @@ object Repo {
             .get()
             .build()
         val text = Api.http.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) throw ApiException("热词接口 HTTP ${resp.code}")
+            if (!resp.isSuccessful) throw ApiException(AppError.Http(resp.code))
             resp.body?.string().orEmpty()
         }
-        if (text.isBlank()) throw ApiException("热词接口为空")
+        if (text.isBlank()) throw ApiException(AppError.EmptyPayload)
         val list = org.json.JSONObject(text)
             .optJSONObject("data")
             ?.optJSONArray("hotWordList")
@@ -435,13 +451,15 @@ object Repo {
         } catch (e: Exception) {
             // 剧集接口失败时，详情页至少还能播 seedVid 这一集
             if (seedVid.isBlank()) {
-                throw ApiException("获取剧集失败：${e.message ?: "接口无响应"}")
+                // 原样上传底层原因：能区分「HTTP 5xx」与「上游业务失败」，
+                // 否则详情页只能报一句笼统的失败；e 同时作为 cause 留给日志
+                throw ApiException(asAppError(e), e)
             }
             vids = listOf(seedVid)
             Log.w(TAG, "eps 失败，回退单集模式：${e.message}")
         }
         if (vids.isEmpty() && seedVid.isNotBlank()) vids = listOf(seedVid)
-        if (vids.isEmpty()) throw ApiException("该剧集没有可取用的视频（可能是单片或已下架）")
+        if (vids.isEmpty()) throw ApiException(AppError.NoVideo)
 
         val episodes = buildEpisodes(vids, fetchMetaMap(vids), vip, title)
         val seed = if (seedVid.isBlank()) "" else seedVid
@@ -530,9 +548,9 @@ object Repo {
         } catch (e: Exception) {
             // vkey 失败 = 该档位实测取不到链接，拉黑后它会从清晰度列表消失，
             // 下次 episodeInfo/选档就会自动降级到下一个可用档位。
-            // 异常语义保持不变：集成层仍据这条消息向用户报错。
+            // 抛的仍是 ApiException（上层 catch 语义不变），但带的是错误码，文案由 ErrorText 决定。
             blacklistTier(tier)
-            throw ApiException("生成播放链接失败：${e.message ?: "接口无响应"}")
+            throw ApiException(asAppError(e), e)
         }
         // hls_url 只在 a=info 的响应里，vkey 响应没有这个字段；分片档按 seg 拼整片 m3u8 没有意义，
         // 所以只有非分片场景才去取，取不到就是空串，播放器自然回退 MP4 直链
@@ -542,7 +560,8 @@ object Repo {
         // 拿到 200 但 url 为空，同样是这一档位实测取不到，一并拉黑
         if (link.url.isBlank()) {
             blacklistTier(tier)
-            throw ApiException("播放链接为空（$fn）")
+            Log.w(TAG, "播放链接为空（$fn），档位已拉黑")
+            throw ApiException(AppError.EmptyPlayUrl)
         }
         return link
     }
@@ -568,21 +587,95 @@ object Repo {
      */
     private fun fileNameFor(tier: Tier, seg: Int): String {
         val p = FileName.parse(tier.fn)
-            ?: return tier.fn.ifBlank { throw ApiException("文件名不可用") }
+            ?: return tier.fn.ifBlank {
+                Log.w(TAG, "文件名不可用，fn 无法反解")
+                throw ApiException(AppError.Unknown)
+            }
         return if (seg <= 0) FileName.forSeg(p, tier.fno) else FileName.forSeg(p, tier.fno, seg.toString())
     }
 
-    /** 弹幕：拉 [fromMs, toMs] */
+    /**
+     * barrage 区间的**对齐网格**。后端对区间的第一条硬约束不是长度而是对齐：
+     * 实测 from/to 必须是 30s 的整数倍 —— 30000..90000、600000..720000 正常；
+     * 15000..75000、45000..105000、601000..661000、0..119999 一律「响应非 JSON」。
+     * 这类失败看着像「数据坏了」，其实是整单被拒，所以看不见就永远不会好。
+     */
+    private const val DANMAKU_GRID_MS = 30_000L
+
+    /**
+     * 单片跨度上限。实测 0..120000 可用，0..150000 / 0..180000 失败，≥900s 报「区间过大」。
+     * 取 90s（3 格）而不是踩线 120s：上游边界会随版本/剧集轻微浮动，
+     * 踩线的那一片一失败就整片丢失，留一格余量比多省一次 HTTP 划算。
+     * 同时必须是 [DANMAKU_GRID_MS] 的整数倍，否则分片内部边界又会踩到对齐问题。
+     */
+    private const val DANMAKU_CHUNK_MS = 3 * DANMAKU_GRID_MS
+
+    /** 并发上限 3：实测 6 片并发 0.89s 全完成，但弹幕是附属功能，不该和首页/详情抢连接池 */
+    private const val DANMAKU_PARALLEL = 3
+
+    /**
+     * 防御性上限。90s 一片实测 900~1700 条（热门剧很密），正常收敛在 2000 以内；
+     * 定 4000 是给「上游异常返回十万条」兜底 —— DanmakuOverlay 每次换窗都要把整份列表跑一遍
+     * arrange，量级失控会直接卡帧，宁可按时间顺序截断（丢窗口末尾）也不能让画面卡住。
+     */
+    private const val DANMAKU_MAX_ITEMS = 4000
+
+    /**
+     * 弹幕：拉 [fromMs, toMs]。签名是跨模块契约，调用方仍然只需要关心「我要哪一段」，
+     * 切片与合并全在这里做 —— 于是任何调用点都不可能再向后端发出超过一个上限的区间。
+     */
     suspend fun danmaku(vid: String, fromMs: Long, toMs: Long): List<Danmaku> {
-        if (vid.isBlank()) return emptyList()
-        return try {
+        if (vid.isBlank() || toMs <= fromMs) return emptyList()
+        // 两端先吸附到后端要求的 30s 网格：调用方（播放页滑动窗口）算出来的是任意位置，
+        // 直接发过去必然被整单拒绝。多带回来的那点余量只是窗口边缘的几条弹幕，
+        // 对显示没有影响，也正因为向外取整，切片边界天然全部落在网格上。
+        val gridFrom = (fromMs.coerceAtLeast(0L) / DANMAKU_GRID_MS) * DANMAKU_GRID_MS
+        val gridTo = ((toMs + DANMAKU_GRID_MS - 1) / DANMAKU_GRID_MS) * DANMAKU_GRID_MS
+        // 半开区间首尾相接 [at, at+CHUNK)，分片之间不重叠，合并时天然不会有重复条目
+        val ranges = ArrayList<Pair<Long, Long>>()
+        var at = gridFrom
+        while (at < gridTo) {
+            val end = minOf(at + DANMAKU_CHUNK_MS, gridTo)
+            ranges += at to end
+            at = end
+        }
+        if (ranges.isEmpty()) return emptyList()
+        val pieces = if (ranges.size == 1) {
+            // 单片就够时不为一次请求搭 coroutineScope。播放页窗口 60s（正好 2 格），
+            // 吸附后跨度只有 60s / 90s 两种，永远落在一片里
+            listOf(fetchDanmakuRange(vid, ranges[0].first, ranges[0].second))
+        } else {
+            coroutineScope {
+                val gate = Semaphore(DANMAKU_PARALLEL)
+                ranges.map { (f, t) ->
+                    async { gate.withPermit { fetchDanmakuRange(vid, f, t) } }
+                }.awaitAll()
+            }
+        }
+        // 分片不重叠，去重只是兜底：上游对边界的处理并不严格，同一个 id 偶尔会跨片返回。
+        // id 缺失时 Parser 会退化成「片内下标」，下标在不同片之间必然撞车，
+        // 所以空白 id 改用「时间 + 文本」当键，避免把两条不同的弹幕当成同一条丢掉。
+        // 排序按 timeMs：awaitAll 只保证分片顺序，片内顺序是上游给的，不保证单调。
+        val merged = pieces.asSequence().flatten()
+            .distinctBy { it.id.ifBlank { "${it.timeMs}|${it.text}" } }
+            .sortedBy { it.timeMs }
+            .toList()
+        return merged.take(DANMAKU_MAX_ITEMS)
+    }
+
+    /**
+     * 单片请求。失败只丢这一片（返回空表）并记一条日志：
+     * 弹幕挂了不能拖垮播放，其余分片照常合并。
+     */
+    private suspend fun fetchDanmakuRange(vid: String, fromMs: Long, toMs: Long): List<Danmaku> =
+        try {
             Parser.danmaku(Api.barrage(vid, fromMs, toMs))
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            // 弹幕挂了不能拖垮播放，静默降级为空轨道
-            Log.w(TAG, "弹幕拉取失败（$vid $fromMs~$toMs）：${e.message}")
+            Log.w(TAG, "弹幕分片失败（$vid $fromMs~$toMs）：${e.message}")
             emptyList()
         }
-    }
 
     /** 把 eps 的 vip 数组、meta 的分类等规整成剧集列表（正片在前） */
     fun buildEpisodes(

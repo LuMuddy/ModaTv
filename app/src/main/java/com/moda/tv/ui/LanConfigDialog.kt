@@ -87,12 +87,13 @@ fun LanConfigDialog(
     var port by remember { mutableStateOf(-1) }
     var startFailed by remember { mutableStateOf(false) }
 
-    // 页面模板放在 assets/config.html，跟着弹窗一起读一次；纯文本几 KB，不必专门开线程
+    // 页面模板放在 assets/index.html，跟着弹窗一起读一次；纯文本几 KB，不必专门开线程
     val context = LocalContext.current
     val pageTemplate = remember(context) { LanConfigServer.loadPageTemplate(context) }
 
     val server = remember(pageTemplate) {
         LanConfigServer(
+            context = context.applicationContext,
             currentBase = { live.value },
             save = save,
             // 服务端在 IO 线程回调，写 Flow 天然线程安全

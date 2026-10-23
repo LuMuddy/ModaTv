@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -53,7 +54,11 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -72,11 +77,12 @@ import com.moda.tv.ui.components.EmptyState
 import com.moda.tv.ui.components.ErrorState
 import com.moda.tv.ui.components.IconActionButton
 import com.moda.tv.ui.components.ListMetrics
-import com.moda.tv.ui.components.listBottomSafe
+import com.moda.tv.ui.components.gridScrollRoom
 import com.moda.tv.ui.components.railScrollRoom
 import com.moda.tv.ui.components.LoadingState
 import com.moda.tv.ui.components.SectionTitle
 import com.moda.tv.ui.components.TvGridFocusScroll
+import com.moda.tv.ui.components.TvRowFocusScroll
 import com.moda.tv.ui.components.VideoCard
 import com.moda.tv.ui.theme.ModaColors
 import com.moda.tv.ui.theme.TvBody
@@ -115,6 +121,15 @@ private const val GRID_COLUMNS = 5
 private const val CONTINUE_WATCHING_LIMIT = 5
 
 /**
+ * 「继续观看」标题在网格里占掉的 item 下标数。
+ *
+ * 标题是 GridItemSpan(GRID_COLUMNS) 的满宽项：视觉上是一整行，**下标上只算一项**。
+ * 因此它后面那些卡片的下标要从 size + 1 起算——认行交给 TvGridFocusScroll 用实际 y 去认，
+ * 但「第几张卡」这个绝对下标仍要自己算准，两处必须一致。
+ */
+private const val CONTINUE_WATCHING_TITLE_ITEMS = 1
+
+/**
  * 首页：顶部工具栏 + tab 栏 + 内容区。
  *
  * 为什么是「固定头部 + 只滚内容」而不是像旧版那样整页一个 LazyColumn：
@@ -147,6 +162,7 @@ private const val CONTINUE_WATCHING_LIMIT = 5
 @Composable
 fun HomeScreen(
     loading: Boolean,
+    /** 调用方已过 appErrorText 的成品文案：错误码→文案的唯一出口在 components/ErrorText.kt，这里只负责上屏 */
     error: String?,
     onRetry: () -> Unit,
     onOpenDetail: (String, String) -> Unit,
@@ -207,6 +223,11 @@ fun HomeScreen(
     val items = feed?.items.orEmpty()
     val isRecommend = tab == HomeTab.Recommend
 
+    // tab 标题在组合期就解析成 String：空态/加载态那两句要用同一份文案，
+    // 往 HomeTabRow / TabChip 深处也只传 String，不把 @Composable 语境渗进纯布局函数
+    val tabTitles = HomeTab.entries.map { stringResource(it.titleRes) }
+    val tabTitle = tabTitles[tab.ordinal]
+
     // 推荐 tab 不在 UI 层再截断：截断的职责只在 Repo.recommendFeed（RECOMMEND_SIZE）。
     // UI 再截一次就是同一个数字有两处口径，改一处漏一处，最后没人说清「该显示几条」。
     val recommendItems = if (isRecommend) items else emptyList()
@@ -233,6 +254,15 @@ fun HomeScreen(
         contentFocusedOnce = true
         firstFocusDone = true
     }
+    // 焦点是否停在 tab 栏上（由 HomeTabRow 上报）。抢首焦点时要看它。
+    var tabBarFocused by remember { mutableStateOf(false) }
+    // 用户自己按过方向键没有。
+    //
+    // 光看 tabBarFocused 不够：冷启动时内容区还没有可聚焦节点，焦点会先落到 tab 栏上，
+    // 那一刻与「用户主动移到 tab 栏」长得一模一样，只看 tabBarFocused 就会让冷启动的
+    // 焦点永久留在 tab 栏（内容到了也不进来，屏幕上一直没有白框）。
+    // 只有按键能区分两者：用户动过手就别再把光标抢回内容区。
+    var userPressedKey by remember { mutableStateOf(false) }
 
     // 内容区第一张卡：推荐与分类都是各自网格的第 0 张
     val entryFocus: FocusRequester = if (isRecommend) firstRecommendFocus else firstGridFocus
@@ -252,6 +282,9 @@ fun HomeScreen(
         repeat(300) {
             withFrameNanos { }
             if (firstFocusDone) return@LaunchedEffect
+            // 用户已经自己把光标停在 tab 栏上：焦点归他，不许再抢回第一张海报。
+            // 连按右键扫 tab 时这一条尤其重要——数据晚到一秒，光标就被拽回内容区。
+            if (userPressedKey && tabBarFocused) return@LaunchedEffect
             runCatching { entryFocus.requestFocus() }
         }
     }
@@ -286,7 +319,19 @@ fun HomeScreen(
         notice = null
     }
 
-    Box(Modifier.fillMaxSize().background(ModaColors.Bg)) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(ModaColors.Bg)
+            // 只在观察阶段记录「用户按过键」，永远不消费事件（返回 false 继续往下传）。
+            // preview 阶段先于被聚焦节点执行，所以焦点在工具栏 / tab 栏 / 内容区时都收得到。
+            .onPreviewKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown) {
+                    userPressedKey = true
+                }
+                false
+            },
+    ) {
         Column(Modifier.fillMaxSize()) {
             HomeToolbar(
                 fetchedAt = pageFetchedAt,
@@ -310,9 +355,11 @@ fun HomeScreen(
 
             HomeTabRow(
                 selected = tab,
+                titles = tabTitles,
                 onSelect = onSelectTab,
                 // 用户一旦自己动过 tab 栏，就说明焦点已经由他接管，别再往回抢
                 onUserFocused = { if (contentFocusedOnce) firstFocusDone = true },
+                onBarFocused = { tabBarFocused = it },
                 selectedTabFocus = tabFocus,
                 // 只有内容真的存在时才给「下」绑落点：加载/错误/空态那几屏没有可聚焦元素
                 downFocus = if (items.isEmpty()) null else entryFocus,
@@ -341,9 +388,11 @@ fun HomeScreen(
                         onRetry = onRefresh,
                         retryFocus = emptyRetryFocus,
                     )
-                    items.isEmpty() && loading -> LoadingState("正在拉取「${tab.title}」…")
+                    items.isEmpty() && loading -> LoadingState(
+                        stringResource(R.string.home_loading_tab, tabTitle),
+                    )
                     items.isEmpty() -> EmptyState(
-                        "「${tab.title}」暂无内容",
+                        stringResource(R.string.home_empty_tab, tabTitle),
                         onRetry = onRefresh,
                         retryFocus = emptyRetryFocus,
                     )
@@ -381,7 +430,12 @@ fun HomeScreen(
                         Modifier
                             .align(Alignment.BottomCenter)
                             .fillMaxWidth()
-                            .height(56.dp)
+                            // 高度必须 ≤ gridScrollRoom 的底部余量（ListBottomSafe = 24dp）：
+                            // 那 24dp 在网格视口**之外**，渐变正好只在空出来的那条带子里，
+                            // 不会压到末行卡片上。原来 56dp 时渐变压在末行焦点描边上，
+                            // 白框被蒙成灰色（"最后一行选中框发暗"就是这个）。
+                            // 取舍：暗示"下面还有"的渐隐变浅了，换成末行描边永远干净。
+                            .height(ListMetrics.ListBottomSafe)
                             .background(
                                 Brush.verticalGradient(
                                     0f to Color.Transparent,
@@ -410,13 +464,14 @@ fun HomeScreen(
 /**
  * 刷新结果提示条：成功用常规字色，失败用 [ModaColors.Danger]。
  *
- * 颜色是这里唯一的区分手段，文案必须能自己说清结果——电视上没有图标可点、
+ * 颜色只是第二重区分，文案必须能自己说清结果——电视上没有图标可点、
  * 也没有悬浮查看，用户扫一眼就得知道「成没成」。
  */
 @Composable
 private fun RefreshNoticeBar(notice: HomeRefreshNotice, modifier: Modifier = Modifier) {
     Text(
-        text = notice.message,
+        // 文案由 ViewModel 只给资源 id、这里按当前语言取串：状态层不写死任何一门语言
+        text = stringResource(notice.messageRes),
         style = TvBody.copy(fontSize = 18.sp),
         color = if (notice.success) ModaColors.Text else ModaColors.Danger,
         modifier = modifier
@@ -508,7 +563,7 @@ private fun HomeToolbar(
                 color = ModaColors.TextDim,
             )
             Text(
-                text = "现在 " + clockLabel(now),
+                text = stringResource(R.string.home_now, clockLabel(now)),
                 style = TvCaption.copy(fontSize = 15.sp),
                 color = ModaColors.TextDim,
             )
@@ -518,7 +573,7 @@ private fun HomeToolbar(
         // 工具栏只显示、不抢首焦点（首焦点由 HomeScreen 的 enter 与多帧重试交给内容区）。
         IconActionButton(
             icon = Icons.Default.Refresh,
-            contentDescription = "刷新",
+            contentDescription = stringResource(R.string.home_action_refresh),
             onClick = onRefresh,
             modifier = downModifier,
             iconModifier = refreshIconModifier,
@@ -526,14 +581,14 @@ private fun HomeToolbar(
         Spacer(Modifier.width(16.dp))
         IconActionButton(
             icon = Icons.Default.Search,
-            contentDescription = "搜索",
+            contentDescription = stringResource(R.string.home_action_search),
             onClick = onOpenSearch,
             modifier = downModifier,
         )
         Spacer(Modifier.width(16.dp))
         IconActionButton(
             icon = Icons.Default.History,
-            contentDescription = "历史",
+            contentDescription = stringResource(R.string.home_action_history),
             onClick = onOpenHistory,
             modifier = downModifier,
         )
@@ -543,7 +598,7 @@ private fun HomeToolbar(
         // 空心轮廓与搜索/历史/设置的视觉重量一致
         IconActionButton(
             icon = Icons.Default.FavoriteBorder,
-            contentDescription = "收藏",
+            contentDescription = stringResource(R.string.home_action_favorites),
             onClick = onOpenFavorites,
             modifier = downModifier,
         )
@@ -552,14 +607,14 @@ private fun HomeToolbar(
         // 比 Stars / DoneAll 更不容易和收藏、历史混淆
         IconActionButton(
             icon = Icons.Default.CheckCircle,
-            contentDescription = "已看完",
+            contentDescription = stringResource(R.string.home_action_completed),
             onClick = onOpenCompleted,
             modifier = downModifier,
         )
         Spacer(Modifier.width(16.dp))
         IconActionButton(
             icon = Icons.Default.Settings,
-            contentDescription = "设置",
+            contentDescription = stringResource(R.string.home_action_settings),
             onClick = onOpenSettings,
             modifier = downModifier,
         )
@@ -572,18 +627,31 @@ private fun HomeToolbar(
  * fetchedAt == 0 表示「整页还没成功刷新过」（pageFetchedAt 从未刷成功过就是 0L），
  * 必须显式判零：直接格式化会把 0 渲染成 1970-01-01 08:00，看起来像真抓到了什么。
  *
- * 今天/昨天用中文相对日而不是日期：这个位置一天里绝大多数时候都是「今天」，
+ * 今天/昨天用相对日而不是日期：这个位置一天里绝大多数时候都是「今天」，
  * 天天挂着同一个日期只会让这一行变成一块看不出变化的背景噪声。
+ *
+ * 这里必须是 @Composable：三处文案（尚未刷新 / 今天昨天 / 上次刷新 %s）都要按当前语言取资源。
  */
+@Composable
 private fun lastRefreshLabel(fetchedAt: Long, now: Long): String {
-    if (fetchedAt <= 0L) return "尚未刷新"
+    if (fetchedAt <= 0L) return stringResource(R.string.home_last_refresh_never)
     val day = when {
-        isSameDay(fetchedAt, now) -> "今天 "
-        isSameDay(fetchedAt, now - DAY_MS) -> "昨天 "
+        isSameDay(fetchedAt, now) -> stringResource(R.string.home_day_today)
+        isSameDay(fetchedAt, now - DAY_MS) -> stringResource(R.string.home_day_yesterday)
         // 更早的才退回日期，且不带年份：电视上「去年刷的」和「从没刷过」没有区别
-        else -> SimpleDateFormat("M月d日 ", Locale.getDefault()).format(Date(fetchedAt))
+        else -> monthDayLabel(fetchedAt)
     }
-    return "上次刷新 " + day + clockLabel(fetchedAt)
+    return stringResource(R.string.home_last_refresh, "$day ${clockLabel(fetchedAt)}")
+}
+
+/**
+ * 「月日」的格式串也交给系统按当前语言给：中文得「3月5日」、英文得「Mar 5」。
+ * 写死 "M月d日" 等于让英文系统看见中文日期，而且不带年份这点要继续保住。
+ */
+private fun monthDayLabel(at: Long): String {
+    val locale = Locale.getDefault()
+    val pattern = android.text.format.DateFormat.getBestDateTimePattern(locale, "MMMd")
+    return SimpleDateFormat(pattern, locale).format(Date(at))
 }
 
 /** 时分。两处（上次刷新 / 现在）共用一份格式，避免各写一遍、日后改一处漏一处 */
@@ -621,9 +689,13 @@ private fun tabFocusBorder(corner: Dp) =
 @Composable
 private fun HomeTabRow(
     selected: HomeTab,
+    /** 与 HomeTab.entries 同序的已解析标题。由调用方在组合期取资源，这里只当纯文本用 */
+    titles: List<String>,
     onSelect: (HomeTab) -> Unit,
     /** 用户自己把焦点移进 tab 栏时通知外层：从此不要再抢首焦点 */
     onUserFocused: () -> Unit,
+    /** 焦点是否停在 tab 栏上：外层的抢首焦点循环靠它判断"光标已经归用户" */
+    onBarFocused: (Boolean) -> Unit = {},
     selectedTabFocus: FocusRequester,
     /** 内容区首卡。为 null 表示这一屏没有可落点的内容（正在加载 / 错误 / 空态） */
     downFocus: FocusRequester?,
@@ -634,8 +706,16 @@ private fun HomeTabRow(
     // 之前用 Row 的理由是「5 个 tab 一排放得下，换来切到第 5 个时整排不被滚走」。
     // 这条理由在 22 个 tab 下已经不成立——不滚动的话后面 17 个根本点不到。
     //
-    // 焦点驱动的自动滚动由 LazyRow 自己处理：焦点移到视口外的 tab 时它会自动把它带进来。
+    // 焦点驱动的滚动交给 TvRowFocusScroll（R2：按整格跟焦 + scrollBy 立即到位）。
+    //
+    // 这里原来写着「交给 LazyRow 自己处理」，那是错的：LazyRow 的默认行为只把目标
+    // 滚成"刚好可见"，连按右键时画面追不上光标，首末 tab 的白框还会被轨道视口切平。
+    val tabListState = rememberLazyListState()
+    var focusedTabIndex by remember { mutableIntStateOf(-1) }
+    TvRowFocusScroll(state = tabListState, focusedIndex = focusedTabIndex)
+
     LazyRow(
+        state = tabListState,
         /**
          * 这个 8dp 是给「聚焦放大」留的溢出空间，不是审美留白，而且必须写在**视口之外**。
          *
@@ -644,7 +724,10 @@ private fun HomeTabRow(
          * 「推荐」左侧的圆角/描边还被 LazyRow 的视口切平（真机上就是这个现象）。
          * 外层 40dp + 这里 8dp 仍是 48dp，第一个 tab 依旧与工具栏图标左对齐。
          */
-        modifier = modifier.railScrollRoom(8.dp),
+        modifier = modifier
+            .railScrollRoom(8.dp)
+            // hasFocus 覆盖整个子树：在 tab 之间移动时不会误判成"离开 tab 栏"
+            .onFocusChanged { onBarFocused(it.hasFocus) },
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -652,12 +735,14 @@ private fun HomeTabRow(
             val entry = HomeTab.entries[index]
             val isSelected = entry == selected
             TabChip(
-                title = entry.title,
+                title = titles[index],
                 isSelected = isSelected,
                 onClick = { onSelect(entry) },
                 // 焦点一落上来就切。重复切同一个 tab 由 ViewModel 的 selectHomeTab 幂等兜住
                 // （它只在这个 tab 从未加载过时才发请求）
                 onFocused = {
+                    // 上报下标，让 TvRowFocusScroll 把这一格摆到视口里（首末 tab 才不会贴边被切）
+                    focusedTabIndex = index
                     onUserFocused()
                     if (!isSelected) onSelect(entry)
                 },
@@ -805,8 +890,11 @@ private fun RecommendContent(
         state = gridState,
         // enter 指向首卡：进首页时焦点必须直接落进内容区，
         // 而不是让 Compose 按几何挑到工具栏的刷新图标
+        // gridScrollRoom：上下各留一档**视口之外**的余量，末行焦点描边的下沿
+        // 与首行描边的上沿才不会被网格视口切平（见 Common.kt 的规则 3）
         modifier = Modifier
             .fillMaxSize()
+            .gridScrollRoom()
             .focusProperties { onEnter = { entryFocus } },
         // 顶部 12dp 必须留在 contentPadding（视口之内）：焦点滚动会把被聚焦项顶到视口边，
         // 写在外面的留白它根本用不上，于是首行卡片聚焦放大后上沿被视口切平
@@ -864,9 +952,13 @@ private fun RecommendContent(
         if (history.isNotEmpty()) {
             item(span = { GridItemSpan(GRID_COLUMNS) }, key = "continue-title") {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    SectionTitle("继续观看")
+                    SectionTitle(stringResource(R.string.home_continue_watching))
                     Spacer(Modifier.width(12.dp))
-                    Text("${history.size} 条", style = TvBody, color = ModaColors.TextDim)
+                    Text(
+                        stringResource(R.string.home_continue_count, history.size),
+                        style = TvBody,
+                        color = ModaColors.TextDim,
+                    )
                 }
             }
 
@@ -874,7 +966,7 @@ private fun RecommendContent(
                 items = history,
                 // 同一部剧可能同时有多集记录，只用 cid 会撞 key，网格会把重复项直接吞掉
                 key = { i, entry -> "history-${entry.cid}-${entry.episodeIndex}-$i" },
-            ) { _, entry ->
+            ) { historyIndex, entry ->
                 ContinueWatchingCard(
                     entry = entry,
                     // 列宽由网格算
@@ -887,7 +979,17 @@ private fun RecommendContent(
                     // 是纯绘制溢出，网格视口不会为它让路——首行卡片的上沿、末行的下沿
                     // 会被切平，看起来就是"选中框缺了一条边"。余量放进项自己的布局里就不会被裁。
                     .padding(vertical = 10.dp)
-                        .onFocusChanged { state -> if (state.isFocused) onContentFocused() },
+                        // 必须同时上报**网格绝对下标**：TvGridFocusScroll 靠它找到"这一行"，
+                        // 只报 onContentFocused 的话行号停在上一张海报上，连按向下时
+                        // 白框一路跑到屏幕外也没人滚列表（这就是首页那个故障的根因）。
+                        // 「继续观看」区前面是 recommendItems.size 张海报 + 1 个满宽标题项，
+                        // 标题项占掉一个 item 下标，所以基准是 size + 1。
+                        .onFocusChanged { state ->
+                            if (state.isFocused) {
+                                focusedIndex = recommendItems.size + CONTINUE_WATCHING_TITLE_ITEMS + historyIndex
+                                onContentFocused()
+                            }
+                        },
                 )
             }
         }
@@ -902,7 +1004,11 @@ private fun RecommendContent(
                     Modifier.fillMaxWidth().padding(vertical = 18.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("正在刷新…", style = TvBody, color = ModaColors.TextDim)
+                    Text(
+                        stringResource(R.string.home_refreshing),
+                        style = TvBody,
+                        color = ModaColors.TextDim,
+                    )
                 }
             }
         }
@@ -937,8 +1043,10 @@ private fun CategoryGrid(
         state = gridState,
         // enter 指向首卡：切到分类 tab 时焦点必须直接落进网格，
         // 而不是让 Compose 按几何挑到工具栏的刷新图标
+        // gridScrollRoom 同推荐页：末行描边不被视口切平
         modifier = Modifier
             .fillMaxSize()
+            .gridScrollRoom()
             .focusProperties { onEnter = { entryFocus } },
         // 顶部 12dp 必须留在 contentPadding（视口之内）：焦点滚动会把被聚焦项顶到视口边，
         // 写在外面的留白它根本用不上，于是首行卡片聚焦放大后上沿被视口切平
@@ -999,7 +1107,11 @@ private fun CategoryGrid(
                     Modifier.fillMaxWidth().padding(vertical = 18.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("正在刷新…", style = TvBody, color = ModaColors.TextDim)
+                    Text(
+                        stringResource(R.string.home_refreshing),
+                        style = TvBody,
+                        color = ModaColors.TextDim,
+                    )
                 }
             }
         }

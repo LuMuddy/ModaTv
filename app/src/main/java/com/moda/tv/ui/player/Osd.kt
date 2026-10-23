@@ -26,11 +26,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.moda.tv.R
 import com.moda.tv.data.local.DecoderMode
 import com.moda.tv.data.local.PlayerCore
 import com.moda.tv.data.local.PlayerSettings
 import com.moda.tv.model.Episode
 import com.moda.tv.model.Tier
+import com.moda.tv.model.TierName
 import com.moda.tv.ui.theme.ModaColors
 import com.moda.tv.ui.theme.TvBody
 import com.moda.tv.ui.theme.TvCaption
@@ -96,38 +98,66 @@ val OsdSlots: List<OsdSlot> = listOf(
 )
 
 /**
- * OSD 面板内选项的三态配色（全站唯一来源）。
+ * 可选项底色（全站唯一来源）。焦点与选中是**两条不同的通道**，不许互相顶替（R5）：
  *
- * 之前每个面板各写一套 when，结果「选中蓝底 + 聚焦白框 + 白字」三层叠加，
- * 蓝底白字再被白框一挤就糊成一团，根本分不清哪个是选中、哪个是焦点。
- * 现在两条互斥通道：
- *   焦点 → 纯白底 + 深字（"现在能按"）
- *   选中 → 深蓝底 + 白字，且不画白框（避免和焦点抢）
- * 同时成立时焦点优先——用户操作时最需要看到焦点在哪。
+ *   焦点 → 3dp 白描边 + 底色提亮（"遥控器现在停在哪"）
+ *   选中 → #2A5FD6 蓝 + 勾标（"当前生效的是哪个"）
+ *
+ * 两者同时落在同一格上时都要能看见：白框画在蓝底上，勾标留在蓝底里。
+ *
+ * 为什么不再是「焦点 = 纯白底反白 + 深字」：反白是"把这一格涂掉"，
+ * 于是焦点格附近永远没有第二层可读的信息，而倍速/比例/内核这类
+ * 「左右键选中即生效」的档位条里，焦点与生效值天然就是同一格——
+ * 用户从头到尾看不到"生效"这一层，等于选中态不存在（详见 ChipLabel 的注释）。
+ * 顺带也修掉了整排按钮在黑白之间来回闪的观感（3 米外看非常刺眼）。
+ *
+ * 文字一律近白：深字配浅底在电视上会变成"黑块"，与旁边的深底按钮来回跳。
  */
+private val ItemTextColor = Color(0xFFF2F3F7)
+/** 焦点底色：只提亮，不用蓝——蓝在本仓专指「选中/生效」 */
+private val ItemFocusedBg = Color(0xFF3B4459)
+private val ItemIdleBg = Color(0x33000000)
+/** 选中/生效：全站唯一选中色 */
+private val ItemSelectedBg = Color(0xFF2A5FD6)
+
 data class ChipStyle(val container: Color, val content: Color, val borderWidth: Dp, val border: Color)
 
 fun chipStyle(focused: Boolean, selected: Boolean): ChipStyle = when {
-    focused -> ChipStyle(Color(0xFFFFFFFF), Color(0xFF0B0B0F), 0.dp, Color.Transparent)
-    selected -> ChipStyle(Color(0xFF2A5FD6), Color(0xFFFFFFFF), 0.dp, Color.Transparent)
-    else -> ChipStyle(Color(0x33000000), Color(0xFFF2F3F7), 1.dp, Color(0x26FFFFFF))
+    // 焦点态：3dp 白描边是唯一焦点语言；底色在"生效蓝"与"提亮灰蓝"之间二选一，
+    // 于是同一格上能同时读出"这是焦点"与"这是生效值"
+    focused -> ChipStyle(
+        container = if (selected) ItemSelectedBg else ItemFocusedBg,
+        content = ItemTextColor,
+        borderWidth = 3.dp,
+        border = Color(0xFFFFFFFF),
+    )
+    selected -> ChipStyle(ItemSelectedBg, ItemTextColor, 1.dp, Color(0x66FFFFFF))
+    else -> ChipStyle(ItemIdleBg, ItemTextColor, 1.dp, Color(0x26FFFFFF))
+}
+
+/**
+ * 档位条上的一格：文字 + 生效勾标。
+ *
+ * 勾标是"生效值"的第二条通道，专门解决「焦点和生效永远同一格」的读法问题：
+ * 倍速/比例的左右键是选中即生效，白框与勾会同时出现在那一格上——
+ * 白框说"停在这"，勾说"已经在用这个"。两个信息缺一个，用户就会以为
+ * 移动焦点只是预览、或者以为改值没生效。
+ */
+@Composable
+internal fun ChipLabel(label: String, cs: ChipStyle, current: Boolean) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(label, style = TvBody, color = cs.content)
+        if (current) {
+            Spacer(Modifier.width(8.dp))
+            Text("✓", style = TvCaption, color = cs.content.copy(alpha = 0.85f))
+        }
+    }
 }
 
 /** 没有集数表时选集入口无处可去，导航与渲染都跳过它 */
 fun visibleOsdSlots(hasEpisodes: Boolean): List<OsdSlot> =
     if (hasEpisodes) OsdSlots else OsdSlots.filter { it != OsdSlot.Episode }
 
-/**
- * 可选列表项的配色原则（所有 OSD 面板共用）：
- * 1. 聚焦项 = 底色变化 + 白色描边 + 状态条，**文字始终保持近白**；
- * 2. 未聚焦项 = 透明或深底，文字仍是可读的白，不用低对比灰；
- * 3. 全列表禁止「白底+深字」与「黑底+白字」来回跳变——电视观看距离远，
- *    整块反色会让按钮在黑白之间闪，观感刺眼且不易判断焦点移动。
- */
-private val ItemTextColor = Color(0xFFF2F3F7)
-private val ItemFocusedBg = Color(0xFF2A5FD6)
-private val ItemIdleBg = Color(0x4D000000)
-private val ItemCurrentAccent = Color(0xFF2A5FD6)
 
 /** 毫秒转 时:分:秒 / 分:秒 */
 fun formatClock(ms: Long): String {
@@ -157,6 +187,8 @@ fun PlayerOsd(
     tierPanelVisible: Boolean,
     focusedTierIndex: Int,
     modifier: Modifier = Modifier,
+    // 不可用档被按下确认时的可见回执；null 表示没有要说的
+    tierHint: String? = null,
     settings: PlayerSettings = PlayerSettings(),
     episodes: List<Episode> = emptyList(),
     currentEpisodeIndex: Int = 1,
@@ -251,7 +283,7 @@ fun PlayerOsd(
                     Spacer(Modifier.height(12.dp))
                 }
                 if (tierPanelVisible) {
-                    TierPanel(tiers, selectedTier, focusedTierIndex)
+                    TierPanel(tiers, selectedTier, focusedTierIndex, tierHint)
                     Spacer(Modifier.height(12.dp))
                 }
                 ProgressBar(positionMs, bufferedMs, durationMs, introMs, outroMs)
@@ -284,6 +316,16 @@ fun PlayerOsd(
     }
 }
 
+/**
+ * 档位显示名的唯一解析点：资源走 stringResource，上游原文原样返回。
+ * 只放在 UI 侧——数据层（[TierName]）只带资源 id，不带任何语言的句子。
+ */
+@Composable
+fun tierNameText(name: TierName): String = when (name) {
+    is TierName.Upstream -> name.text
+    is TierName.Local -> stringResource(name.resId)
+}
+
 /** 标签一律精简到最短：清晰度只留档位值，其余两字或纯数值 */
 @Composable
 private fun slotLabel(
@@ -296,20 +338,26 @@ private fun slotLabel(
     outroMs: Long,
 ): String = when (slot) {
     // 清晰度只留档位值，省掉「清晰度」三个字
-    OsdSlot.Quality -> tier?.displayName ?: "自动"
-    OsdSlot.Episode -> "选集"
+    OsdSlot.Quality -> tier?.let { tierNameText(it.display) } ?: stringResource(R.string.player_auto)
+    OsdSlot.Episode -> stringResource(R.string.player_episodes)
     OsdSlot.Speed -> settings.speedLabel
-    OsdSlot.Danmaku -> "弹幕"
-    OsdSlot.Aspect -> "比例"
+    OsdSlot.Danmaku -> stringResource(R.string.player_danmaku)
+    OsdSlot.Aspect -> stringResource(R.string.player_aspect)
     // 内核用短名（ExoPlayer 九个字符会把工具栏撑开），解码直接用枚举 label
     OsdSlot.Core -> if (effectiveCore == PlayerCore.Ijk) "IJK" else "Exo"
     OsdSlot.Decoder -> stringResource(effectiveDecoder.labelRes)
     // 有记录就只显示时间，不再重复「片头/片尾」四个字；没记录时才用文字占位
-    OsdSlot.Intro -> if (introMs > 0L) formatClock(introMs) else "片头"
-    OsdSlot.Outro -> if (outroMs > 0L) formatClock(outroMs) else "片尾"
+    OsdSlot.Intro -> if (introMs > 0L) formatClock(introMs) else stringResource(R.string.player_intro)
+    OsdSlot.Outro -> if (outroMs > 0L) formatClock(outroMs) else stringResource(R.string.player_outro)
 }
 
-/** 工具栏按钮：聚焦只换底色与描边，文字始终白色 */
+/**
+ * 工具栏按钮：焦点 = 3dp 白描边 + 底色提亮，文字始终近白。
+ *
+ * 这里曾经用 #2A5FD6 当焦点底色，而同一个蓝在下面的档位条里表示"当前生效"，
+ * 一个颜色两层相反的语义——用户在工具栏上看到蓝，会以为这一项已经被选中/生效了。
+ * 现在蓝只留给"选中/生效"，焦点统一由白描边表达（R5）。
+ */
 @Composable
 private fun OsdButton(label: String, focused: Boolean, muted: Boolean = false) {
     val shape = RoundedCornerShape(10.dp)
@@ -333,10 +381,23 @@ private fun OsdButton(label: String, focused: Boolean, muted: Boolean = false) {
     }
 }
 
+/**
+ * 清晰度档位表。
+ *
+ * 不可用档必须自带标识：PlayerScreen.applyTier 对不可用档是直接 return
+ * （切过去只会黑屏），面板上若不给压暗与「不可用」字样，用户停在它上面按确认
+ * 毫无反应，只会以为遥控器坏了——「按了没反应」是电视上最难诊断的故障。
+ * [hint] 是那一下确认键的可见回执，由 PlayerScreen 在拒绝切换时写入。
+ */
 @Composable
-private fun TierPanel(tiers: List<Tier>, selected: Tier?, focusedIndex: Int) {
+private fun TierPanel(
+    tiers: List<Tier>,
+    selected: Tier?,
+    focusedIndex: Int,
+    hint: String? = null,
+) {
     if (tiers.isEmpty()) {
-        Text("暂无可用清晰度", style = TvCaption)
+        Text(stringResource(R.string.player_no_quality), style = TvCaption)
         return
     }
     val shape = RoundedCornerShape(14.dp)
@@ -349,15 +410,17 @@ private fun TierPanel(tiers: List<Tier>, selected: Tier?, focusedIndex: Int) {
             .border(1.dp, Color(0x33FFFFFF), shape)
             .padding(horizontal = 18.dp, vertical = 14.dp)
     ) {
-        Text("清晰度", style = TvCaption)
+        Text(stringResource(R.string.player_quality), style = TvCaption)
         Spacer(Modifier.height(8.dp))
         tiers.forEachIndexed { index, tier ->
             val focused = index == focusedIndex
             val isCurrent = selected != null && selected.fno == tier.fno && selected.defn == tier.defn
             // 与倍速/比例/内核/解码面板共用同一套三态配色（chipStyle）：
-            // 焦点=白底深字、选中=蓝底白字、其余半透明。面板之间各写一套是
+            // 焦点=3dp 白描边+提亮底、选中=蓝底+勾标、其余半透明。面板之间各写一套是
             // "清晰度里蓝底算焦点、倍速里蓝底算选中"的根源，用户会读反。
             val cs = chipStyle(focused = focused, selected = isCurrent)
+            // 不可用档整行压暗，但白描边照画：焦点永远可见，压暗的只是"这一档能不能用"
+            val content = if (tier.available) cs.content else cs.content.copy(alpha = 0.45f)
             val rowShape = RoundedCornerShape(8.dp)
             Row(
                 Modifier
@@ -369,21 +432,24 @@ private fun TierPanel(tiers: List<Tier>, selected: Tier?, focusedIndex: Int) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    tier.displayName,
+                    tierNameText(tier.display),
                     style = TvBody,
-                    color = cs.content,
+                    color = content,
                 )
+                if (!tier.available) {
+                    Spacer(Modifier.width(10.dp))
+                    Text(stringResource(R.string.player_unavailable), style = TvCaption, color = content)
+                }
                 if (isCurrent) {
                     Spacer(Modifier.width(10.dp))
-                    Text(
-                        "当前",
-                        style = TvCaption,
-                        // 选中蓝底上用半透明白；焦点白底上必须换成深色，否则看不见
-                        color = cs.content.copy(alpha = 0.75f),
-                    )
+                    Text("✓", style = TvCaption, color = content.copy(alpha = 0.85f))
                 }
             }
             Spacer(Modifier.height(6.dp))
+        }
+        if (hint != null) {
+            Spacer(Modifier.height(2.dp))
+            Text(hint, style = TvCaption, color = ModaColors.Danger)
         }
     }
 }
@@ -432,11 +498,11 @@ private fun ProgressBar(
 fun PlayerErrorPane(message: String, retrying: Boolean, modifier: Modifier = Modifier) {
     Box(modifier.fillMaxSize().background(Color(0xCC000000)), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("播放失败", style = TvHeading, color = ModaColors.Danger)
+            Text(stringResource(R.string.player_play_failed), style = TvHeading, color = ModaColors.Danger)
             Spacer(Modifier.height(12.dp))
             Text(message, style = TvCaption)
             Spacer(Modifier.height(28.dp))
-            // 与 OSD 其它聚焦元素同一套：深蓝底 + 白字 + 白描边，不做整块反色
+            // 与 OSD 其它聚焦元素同一套：底色提亮 + 白字 + 3dp 白描边（不做整块反白）
             val shape = RoundedCornerShape(10.dp)
             Box(
                 Modifier
@@ -445,10 +511,14 @@ fun PlayerErrorPane(message: String, retrying: Boolean, modifier: Modifier = Mod
                     .border(3.dp, Color(0xFFFFFFFF), shape)
                     .padding(horizontal = 34.dp, vertical = 12.dp)
             ) {
-                Text(if (retrying) "重试中…" else "重 试", style = TvBody, color = ItemTextColor)
+                Text(
+                    if (retrying) stringResource(R.string.player_retrying) else stringResource(R.string.player_retry),
+                    style = TvBody,
+                    color = ItemTextColor,
+                )
             }
             Spacer(Modifier.height(14.dp))
-            Text("按确认键重试，按返回键退出", style = TvCaption)
+            Text(stringResource(R.string.player_error_hint), style = TvCaption)
         }
     }
 }

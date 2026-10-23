@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ==================== 首页工具栏（图标只有图形，语义全靠 contentDescription：屏幕阅读器与自动化测试都读它） ==================== -->
+    <string name="home_action_refresh">刷新</string>
+    <string name="home_action_search">搜索</string>
+    <string name="home_action_history">历史</string>
+    <string name="home_action_favorites">收藏</string>
+    <string name="home_action_completed">已看完</string>
+    <string name="home_action_settings">设置</string>
+
+    <!-- ==================== 工具栏时间（两截并列：数据有多新 + 此刻几点） ==================== -->
+    <string name="home_last_refresh_never">尚未刷新</string>
+    <string name="home_last_refresh">上次刷新 %1$s</string>
+    <string name="home_day_today">今天</string>
+    <string name="home_day_yesterday">昨天</string>
+    <string name="home_now">现在 %1$s</string>
+
+    <!-- ==================== 内容区状态 ==================== -->
+    <string name="home_loading_tab">正在拉取「%1$s」…</string>
+    <string name="home_empty_tab">「%1$s」暂无内容</string>
+    <string name="home_refreshing">正在刷新…</string>
+
+    <!-- ==================== 继续观看 ==================== -->
+    <string name="home_continue_watching">继续观看</string>
+    <string name="home_continue_count">%1$d 条</string>
+</resources>

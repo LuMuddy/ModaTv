@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  本地库三页（历史 / 收藏 / 已看完）文案。
+
+  三页共用同一批词（清空全部、删除、集号），所以同一条文案只定义一次：
+  三处各写一份，改文案时必然漏掉其中一页。
+  「清空」弹窗的标题复用 strings.xml 里已有的 clear_history_title / clear_favorites_title，
+  那是同一件事的同一句话，不在这里重复定义。
+-->
+<resources>
+    <string name="lib_clear_all">清空全部</string>
+    <string name="lib_delete">删除</string>
+
+    <!-- ===== 观看历史 ===== -->
+    <string name="lib_hist_title">历史记录 %1$d 条</string>
+    <string name="lib_hist_empty">还没有观看记录</string>
+    <string name="lib_hist_clear_message">将删除 %1$d 条观看记录及其播放进度，删除后无法恢复。</string>
+    <!-- %1$s 是「32:15 / 47:38」这种时间点对时间点 -->
+    <string name="lib_watched">%1$s 已看</string>
+
+    <!-- ===== 收藏 ===== -->
+    <string name="lib_fav_title">我的收藏 %1$d 部</string>
+    <string name="lib_fav_empty">还没有收藏的剧集</string>
+    <string name="lib_fav_empty_hint">在剧集详情页点「收藏」即可加入这里</string>
+    <string name="lib_fav_clear_message">将删除 %1$d 部收藏，删除后无法恢复。</string>
+
+    <!-- ===== 已看完 ===== -->
+    <string name="lib_done_title">已看完 %1$d 条</string>
+    <!-- 空态两行文案：换行写在这里而不是拆成两条资源，调用点仍是 EmptyState(message) 一个参数 -->
+    <string name="lib_done_empty">还没有看完的剧集\n看完一集之后会自动记到这里</string>
+    <string name="lib_done_clear_title">清空全部已看完？</string>
+    <string name="lib_done_clear_message">将删除 %1$d 条已看完记录，删除后无法恢复（不影响观看历史）。</string>
+    <string name="lib_done_badge">看完</string>
+    <!-- %1$s 是片长 h:mm:ss -->
+    <string name="lib_duration">片长 %1$s</string>
+
+    <!-- ===== 集号 ===== -->
+    <string name="lib_episode_no">第 %1$d 集</string>
+    <string name="lib_episode_unknown">集号未知</string>
+</resources>

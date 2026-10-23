@@ -1,5 +1,6 @@
 package com.moda.tv.data
 
+import android.util.Log
 import com.moda.tv.BuildConfig
 import com.moda.tv.model.*
 import kotlinx.coroutines.Dispatchers
@@ -10,18 +11,23 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 /**
- * 后端调用层。
+ * 后端调用层抛出的唯一失败类型：只带结构化错误码 [AppError]，不带文案。
  *
  * 请求路径、动作名、请求头与响应包装属于**运行期契约**，不随仓库发布——
  * 客户端只需要知道：所有请求都发往 [BASE]，失败时抛 [ApiException]。
  *
+ * 为什么不是 message 字符串：文案在这里生成，数据层就被某一种语言绑死了——
+ * UI 拿到它只能原样上屏，系统语言是英文时仍会显示中文。
+ * 人话由 ui/components/ErrorText.kt 按当前语言取资源。
+ *
  * 后端地址、设备令牌与指纹一律来自 BuildConfig（构建期从 local.properties 注入），
  * 仓库内不保存任何真实值；缺省时为空串，见 local.properties.example。
  */
-class ApiException(message: String) : Exception(message)
+class ApiException(val error: AppError, cause: Throwable? = null) : Exception(cause)
 
 object Api {
     /** 出厂默认地址；用户没在设置页改过时就是它（ApiSettingsStore 以键缺失表示"没改过"） */
@@ -47,6 +53,8 @@ object Api {
             .build()
     }
 
+    private const val TAG = "Api"
+
     private val JSON = "application/json".toMediaType()
 
     /** 底层 POST，返回已校验 ok=true 的 JSONObject */
@@ -58,22 +66,31 @@ object Api {
             .header("X-Auth-Fp", DEVICE_FP)
             .post(body.toString().toRequestBody(JSON))
             .build()
-        val text = http.newCall(req).execute().use { resp ->
-            val t = resp.body?.string().orEmpty()
-            if (t.isBlank()) throw ApiException("接口为空（HTTP ${resp.code}）")
-            t
+        val text = try {
+            http.newCall(req).execute().use { resp ->
+                val t = resp.body?.string().orEmpty()
+                // 非 2xx 与「2xx 但空体」是两回事：前者是服务端故障码，后者是后端/代理返回了空
+                if (!resp.isSuccessful) throw ApiException(AppError.Http(resp.code))
+                if (t.isBlank()) throw ApiException(AppError.EmptyPayload)
+                t
+            }
+        } catch (e: IOException) {
+            // 裸 IOException 到 ViewModel 只能落成「未知错误」，就地归一为网络失败，
+            // 用户才看得到「检查网络」这句可行动的话
+            throw ApiException(AppError.Network, e)
         }
         val json = try {
             JSONObject(text)
         } catch (e: Exception) {
-            throw ApiException("接口未返回 JSON（${text.take(120)}）")
+            // 响应体可能是代理的错误页；正文里可能带地址和签名，只进日志不上屏
+            Log.w(TAG, "接口未返回 JSON（${text.length} 字节）：${text.take(120)}")
+            throw ApiException(AppError.Upstream(null), e)
         }
         if (!json.optBoolean("ok", false)) {
-            throw ApiException(
-                json.optString("error").ifBlank {
-                    json.optString("msg").ifBlank { "接口失败" }
-                }
-            )
+            // 上游的 error/msg 是它自己的语言，只能进日志；AppError 里不许留中文
+            val upstream = json.optString("error").ifBlank { json.optString("msg") }
+            Log.w(TAG, "上游返回 ok=false：${upstream.take(120)}")
+            throw ApiException(AppError.Upstream(null))
         }
         json
     }

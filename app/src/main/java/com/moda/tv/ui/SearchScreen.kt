@@ -50,6 +50,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
@@ -63,10 +64,15 @@ import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.LocalContentColor
 import androidx.tv.material3.Surface
 import androidx.tv.material3.SurfaceDefaults
+import com.moda.tv.R
+import com.moda.tv.model.AppError
 import com.moda.tv.model.VideoItem
 import com.moda.tv.ui.components.ListMetrics
+import com.moda.tv.ui.components.TvFirstFocus
+import com.moda.tv.ui.components.gridScrollRoom
 import com.moda.tv.ui.components.railScrollRoom
 import com.moda.tv.ui.components.ActionButton
+import com.moda.tv.ui.components.appErrorText
 import com.moda.tv.ui.components.EmptyState
 import com.moda.tv.ui.components.ErrorState
 import com.moda.tv.ui.components.LoadingState
@@ -78,6 +84,7 @@ import com.moda.tv.ui.theme.ModaColors
 import com.moda.tv.ui.theme.TvBody
 import com.moda.tv.ui.theme.TvCaption
 import com.moda.tv.ui.theme.TvTitle
+import java.io.IOException
 import kotlinx.coroutines.CancellationException
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
@@ -109,7 +116,8 @@ fun SearchScreen(
     var query by remember { mutableStateOf(TextFieldValue("")) }
     var results by remember { mutableStateOf<List<VideoItem>?>(null) }
     var searching by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
+    /** 搜索失败只存错误码：文案在渲染处过 appErrorText，切系统语言才能跟着变 */
+    var error by remember { mutableStateOf<AppError?>(null) }
     var lastQuery by remember { mutableStateOf("") }
     var hotWords by remember { mutableStateOf<List<String>>(emptyList()) }
     // 输入框里当前轮播到的热词；输入为空时按搜索就用它
@@ -124,6 +132,15 @@ fun SearchScreen(
     // 搜索成功后要把焦点从输入框移走，否则方向键继续被输入框吃掉，结果列表点不到
     val focusManager = LocalFocusManager.current
     val inputFocus = remember { FocusRequester() }
+    // 结果区的首焦点落点（第 0 张卡）。clearFocus() 之后必须有东西接手焦点，
+    // 否则整屏没有白框、方向键还被输入框吃掉，结果网格永远进不去。
+    val firstResultFocus = remember { FocusRequester() }
+    // 错误态 / 空结果态里唯一的按钮落点，见 Common.kt 的 retryFocus
+    val retryFocus = remember { FocusRequester() }
+    // 第几次提交。落点效果的 key 必须带上它：同一个词再搜一次时结果可能一模一样，
+    // 只看结果内容当 key 的话效果不重启，而这一轮里结果网格已经被 LoadingState
+    // 换下去过一次——旧节点连同焦点一起消失，焦点就再也回不到第 0 张了。
+    var searchTick by remember { mutableIntStateOf(0) }
 
     fun submit(word: String) {
         // 输入为空但热词提示存在时，用户按下搜索显然是「想搜屏幕上这个词」，
@@ -138,19 +155,27 @@ fun SearchScreen(
         // 结果列表根本用遥控器点不到。
         focusManager.clearFocus()
         lastQuery = q
+        searchTick++
         searching = true
         error = null
         scope.launch {
             try {
                 val found = onSearch(q)
                 results = found
+                // 新一批结果必须从第一张开始：上一次搜索可能已经滚到第 N 行，
+                // 那时第 0 张根本不在组合里，requestFocus 找不到节点（首焦点直接落空）。
+                // requestScrollToItem 是非挂起版本，只登记位置请求，不会卡住这条协程。
+                resultFocusIndex = -1
+                resultGridState.requestScrollToItem(0)
                 // 只有真的搜成功才进历史：失败/取消不该污染记录
                 onRecordSearch(q)
             } catch (e: CancellationException) {
                 // 页面被销毁时的取消不该显示成「搜索失败」
                 throw e
             } catch (e: Exception) {
-                error = e.message ?: "搜索失败"
+                // 屏幕层不碰 data/Api：只按 JDK 的 IOException 粗分「网络 / 未知」，
+                // 更细的错误码（HTTP 状态等）在 Repo 侧已经进了日志
+                error = if (e.isNetworkFailure()) AppError.Network else AppError.Unknown
                 results = null
             } finally {
                 searching = false
@@ -185,7 +210,7 @@ fun SearchScreen(
                 .padding(start = 48.dp, end = 48.dp, top = 32.dp, bottom = 24.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("搜索", style = TvTitle, color = ModaColors.Text)
+                Text(stringResource(R.string.search_title), style = TvTitle, color = ModaColors.Text)
                 Spacer(Modifier.width(28.dp))
                 SearchField(
                     hotWords = hotWords,
@@ -207,43 +232,78 @@ fun SearchScreen(
                 )
                 Spacer(Modifier.width(16.dp))
                 ActionButton(
-                    text = if (searching) "搜索中…" else "搜索",
+                    text = if (searching) {
+                        stringResource(R.string.search_submitting)
+                    } else {
+                        stringResource(R.string.search_submit)
+                    },
                     onClick = { submit(query.text) },
                     primary = true,
                     enabled = !searching,
                 )
                 Spacer(Modifier.width(12.dp))
-                ActionButton(text = "返回", onClick = onBack)
+                ActionButton(text = stringResource(R.string.search_back), onClick = onBack)
             }
 
             Spacer(Modifier.height(22.dp))
 
             val shown = results
+            // 先落成 val 再用：error 是委托属性，when 分支里智能转换不到非空 AppError
+            val shownError = error
             val hint = when {
                 searching -> null
-                error != null -> null
-                shown == null -> "输入关键词后按「搜索」确认"
-                shown.isEmpty() -> "没有找到「$lastQuery」相关的内容"
-                else -> "共 ${shown.size} 个结果"
+                shownError != null -> null
+                shown == null -> stringResource(R.string.search_idle_hint)
+                shown.isEmpty() -> stringResource(R.string.search_no_result, lastQuery)
+                else -> stringResource(R.string.search_result_count, shown.size)
             }
             if (hint != null) {
                 Text(hint, style = TvCaption.copy(fontSize = 16.sp), color = ModaColors.TextDim)
                 Spacer(Modifier.height(12.dp))
             }
 
+            // 这次搜索的焦点落点：有结果 → 第 0 张卡；失败 / 空结果 → 那一屏唯一的按钮。
+            // key 用提交次数 searchTick：每搜一次都要重新落一次焦点，
+            // 不能只看结果内容（两次搜同一个词的结果可能一模一样，效果就不重启了）。
+            TvFirstFocus(
+                requester = when {
+                    // 搜索进行中一律不给落点：这一屏只有加载态，没有可聚焦节点。
+                    // 必须显式返回 null——否则上一批结果还留在 shown 里，落点会被判定为
+                    // "结果第 0 张"，而那时网格已经换成了 LoadingState，
+                    // requestFocus 找不到节点、效果又已经用掉，新结果到了也不会重新落焦点。
+                    searching -> null
+                    shown != null && shown.isNotEmpty() -> firstResultFocus
+                    shown != null || shownError != null -> retryFocus
+                    else -> null
+                },
+                key = searchTick,
+            )
+
             // weight(1f)：Column 里 fillMaxSize 拿到的是整列高度，结果网格视口
             // 比屏幕长出一截，末行贴着屏幕下沿被切
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when {
-                    searching -> LoadingState("正在搜索「$lastQuery」…")
-                    error != null -> ErrorState(message = error ?: "", onRetry = { submit(query.text) })
+                    searching -> LoadingState(stringResource(R.string.search_loading, lastQuery))
+                    // retryFocus：失败时整屏只有这一个按钮，焦点必须先落在它上面，
+                    // 否则用户看着「重试」按确认没反应（R9）
+                    shownError != null -> ErrorState(
+                        message = appErrorText(shownError),
+                        onRetry = { submit(query.text) },
+                        retryFocus = retryFocus,
+                    )
                     shown == null -> IdlePanel(
                         hotWords = hotWords,
                         history = history,
                         onPick = { word -> submit(word) },
                         onClearHistory = onClearHistory,
                     )
-                    shown.isEmpty() -> EmptyState("换个关键词试试")
+                    // 空结果同样要有一个可聚焦落点：R9 要求空态里的按钮拿得到首焦点。
+                    // 按下去 = 用同一个词重搜一次（网络抖动导致的空结果真能救回来）
+                    shown.isEmpty() -> EmptyState(
+                        stringResource(R.string.search_empty_retry_hint),
+                        onRetry = { submit(query.text) },
+                        retryFocus = retryFocus,
+                    )
                     else -> LazyVerticalGrid(
                         columns = GridCells.Fixed(4),
                         state = resultGridState,
@@ -253,7 +313,8 @@ fun SearchScreen(
                         horizontalArrangement = Arrangement.spacedBy(20.dp),
                         // 纵向缝隙由每项的 10dp 余量提供（见下方 VideoCard 的 modifier）
                         verticalArrangement = Arrangement.spacedBy(0.dp),
-                        modifier = Modifier.fillMaxSize(),
+                        // gridScrollRoom：底部余量写在视口之外，末行焦点描边才不被切平
+                        modifier = Modifier.fillMaxSize().gridScrollRoom(),
                     ) {
                         items(count = shown.size, key = { i -> "${shown[i].cid}-${shown[i].vid}-$i" }) { index ->
                             val item = shown[index]
@@ -265,6 +326,13 @@ fun SearchScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(vertical = 10.dp)
+                                    // 第 0 张同时接收首焦点 requester：搜索完成后焦点直接落到这里
+                                    .then(
+                                        if (index == 0) Modifier.focusRequester(firstResultFocus)
+                                        else Modifier
+                                    )
+                                    // 跟焦下标必须与 focusRequester 同一个节点上报，
+                                    // 否则滚列表和焦点框会各说各话
                                     .onFocusChanged { if (it.isFocused) resultFocusIndex = index },
                                 width = null,
                             )
@@ -288,7 +356,7 @@ private fun IdlePanel(
     onClearHistory: () -> Unit,
 ) {
     if (hotWords.isEmpty() && history.isEmpty()) {
-        EmptyState("还没有搜索内容")
+        EmptyState(stringResource(R.string.search_empty_idle))
         return
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
@@ -296,9 +364,9 @@ private fun IdlePanel(
         // 同一批词出现两处会让人分不清哪个是提示、哪个是可选项
         if (history.isNotEmpty()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                SectionTitle("搜索历史")
+                SectionTitle(stringResource(R.string.search_history_title))
                 Spacer(Modifier.width(16.dp))
-                ActionButton(text = "清空历史", onClick = onClearHistory)
+                ActionButton(text = stringResource(R.string.search_clear_history), onClick = onClearHistory)
             }
             Spacer(Modifier.height(4.dp))
             // R2：这条轨道也按整格跟焦（左右连按时焦点格不会跑到视口外）
@@ -349,9 +417,13 @@ private fun HotWordsCarousel(
 
     Column(Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            SectionTitle("热词")
+            SectionTitle(stringResource(R.string.search_hotword_title))
             Spacer(Modifier.width(12.dp))
-            Text("点按直接搜索", style = TvCaption.copy(fontSize = 15.sp), color = ModaColors.TextDim)
+            Text(
+                stringResource(R.string.search_hotword_tap_hint),
+                style = TvCaption.copy(fontSize = 15.sp),
+                color = ModaColors.TextDim,
+            )
         }
         LazyRow(
             state = state,
@@ -439,7 +511,11 @@ private fun HotWordHint(words: List<String>, onCurrentChange: (String) -> Unit =
     LaunchedEffect(word) { onCurrentChange(word) }
     Crossfade(targetState = word, animationSpec = tween(420), label = "hotword-hint") { shown ->
         Text(
-            text = if (shown.isBlank()) "输入片名 / 演员…" else "搜索「$shown」",
+            text = if (shown.isBlank()) {
+                stringResource(R.string.search_hint_input)
+            } else {
+                stringResource(R.string.search_hint_hotword, shown)
+            },
             style = TvBody.copy(fontSize = 22.sp),
             color = ModaColors.TextDim,
             maxLines = 1,
@@ -489,7 +565,7 @@ private fun SearchField(
                     // 热词当 hint：没有热词时退回通用提示，保证任何情况下输入框都不是空的
                     if (hotWords.isEmpty()) {
                         Text(
-                            "输入片名 / 演员…",
+                            stringResource(R.string.search_hint_input),
                             style = TvBody.copy(fontSize = 22.sp),
                             color = ModaColors.TextDim,
                         )
@@ -529,7 +605,19 @@ private fun SearchField(
                 )
             }
             Spacer(Modifier.width(12.dp))
-            Text("OK 搜索", style = TvCaption.copy(fontSize = 14.sp), color = Color.White.copy(alpha = 0.45f))
+            Text(
+                stringResource(R.string.search_ime_hint),
+                style = TvCaption.copy(fontSize = 14.sp),
+                color = Color.White.copy(alpha = 0.45f),
+            )
         }
     }
 }
+
+/**
+ * 只按异常类型判「是不是网络掉线」，不看任何 message：
+ * Repo 抛出的 ApiException 把底层 IOException 挂在 cause 上（见 Repo.asAppError）。
+ * 屏幕层因此不必 import data/Api，也就不会把数据层拖进 UI。
+ */
+private fun Throwable.isNetworkFailure(): Boolean =
+    this is IOException || cause is IOException

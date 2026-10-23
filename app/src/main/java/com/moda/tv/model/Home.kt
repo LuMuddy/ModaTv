@@ -1,38 +1,48 @@
 package com.moda.tv.model
 
+import androidx.annotation.StringRes
+import com.moda.tv.R
+
 /**
  * 首页顶部的分类 tab。顺序即工具栏顺序，固定不变（推荐在最左，冷启动默认选中它）。
  *
- * [title] 是给用户看的标签，不进任何存储键——存储用 [name]（Recommend/Tv/...），
- * 这样改中文文案不会让旧缓存失联。
+ * [titleRes] 是 **资源 id** 而不是字符串：分类名属于界面文案，必须跟着系统语言走
+ * （中文 values/、英文 values-en/）。这里若直接存中文，数据层就被中文绑死，
+ * 系统语言是英文时首页 tab 栏仍然只能是中文。
+ *
+ * 存储与日志一律用 [name]（Recommend/Tv/...）：改文案不能让旧缓存失联，
+ * 也不能让日志跟着语言变。
+ *
+ * 注解写成 `@param:` 是显式指定目标——构造器参数上的 @StringRes 目标未定，
+ * 不写编译器会报 KT-73255 告警（与 PlayerSettingsStore 的 labelRes 写法一致）。
  */
-enum class HomeTab(val title: String) {
-    Recommend("推荐"),
+enum class HomeTab(@param:StringRes val titleRes: Int) {
+    Recommend(R.string.tab_recommend),
 
     // ---- 以下顺序取自 v.qq.com 首页导航栏的真实排列 ----
-    Tv("电视剧"),
-    Movie("电影"),
-    Variety("综艺"),
-    Cartoon("动漫"),
+    Tv(R.string.tab_tv),
+    Movie(R.string.tab_movie),
+    Variety(R.string.tab_variety),
+    Cartoon(R.string.tab_cartoon),
 
     /**
      * 少儿。腾讯站内分类名就是「少儿」，不是「儿童」（见 /channel/child 的 title）。
      */
-    Child("少儿"),
+    Child(R.string.tab_child),
 
-    Doco("纪录片"),
-    Choice("精选"),
-    Music("音乐"),
-    Sports("体育"),
-    Nba("NBA"),
-    Game("游戏"),
-    Auto("汽车"),
-    Fashion("时尚"),
-    Life("生活"),
-    Art("艺术"),
-    Pet("萌宠"),
-    Podcast("播客"),
-    FreeList("免费");
+    Doco(R.string.tab_doco),
+    Choice(R.string.tab_choice),
+    Music(R.string.tab_music),
+    Sports(R.string.tab_sports),
+    Nba(R.string.tab_nba),
+    Game(R.string.tab_game),
+    Auto(R.string.tab_auto),
+    Fashion(R.string.tab_fashion),
+    Life(R.string.tab_life),
+    Art(R.string.tab_art),
+    Pet(R.string.tab_pet),
+    Podcast(R.string.tab_podcast),
+    FreeList(R.string.tab_free);
 
     companion object {
         /** tab 栏按这个顺序铺，不要自行排序 */

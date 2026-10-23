@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ==================== 通用状态（components/Common.kt） ==================== -->
+    <string name="core_loading">加载中…</string>
+    <string name="core_load_failed">加载失败</string>
+    <string name="core_retry">重试</string>
+    <string name="core_reload">重新加载</string>
+    <!-- 标题为空时的封面占位字：方块里只放一个字符，多一个就会把 34sp 的字挤出圆角 -->
+    <string name="core_cover_fallback">剧</string>
+
+    <!-- ==================== 卡片文案（components/Cards.kt） ==================== -->
+    <string name="core_episode_unknown">集号未知</string>
+    <string name="core_episode_index">第 %1$d 集</string>
+    <string name="core_badge_trailer">预告</string>
+
+    <!-- ==================== 播放装配（ui/AppRoot.kt 的 PlayerRoute） ==================== -->
+    <string name="core_player_preparing">正在准备播放…</string>
+
+    <!-- ==================== 退出确认弹窗（ui/AppRoot.kt） ==================== -->
+    <string name="dialog_exit_title">退出 ModaTv？</string>
+    <string name="dialog_exit_message">按「确认」关闭应用，按「返回」继续观看</string>
+    <string name="dialog_exit_confirm">确认退出</string>
+</resources>

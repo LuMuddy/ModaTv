@@ -24,6 +24,7 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import tv.danmaku.ijk.media.player.IMediaPlayer
 import tv.danmaku.ijk.media.player.IjkMediaPlayer
 import com.moda.tv.data.Api
+import com.moda.tv.model.PlayerError
 
 /**
  * 播放器内核抽象层。
@@ -77,8 +78,70 @@ interface PlayerEngine {
         fun onPlayingChanged(playing: Boolean)
         fun onBufferingChanged(buffering: Boolean)
         fun onEnded()
-        fun onError(message: String)
+
+        /**
+         * 失败原因只给错误码，不给文案：内核层不该知道界面说什么语言，
+         * 文案由上层按当前系统语言从 string 资源里取（ui/components/ErrorText.kt）。
+         */
+        fun onError(error: PlayerError)
+
         fun onVideoSizeChanged(width: Int, height: Int)
+    }
+}
+
+/**
+ * media3 错误码 → 结构化播放错误。
+ *
+ * 只分「解码失败」与「片源/网络失败」两类，因为用户在播放页能做的动作只有
+ * 换内核、换解码方式、换清晰度、重试——比这更细的分类对着 UI 没有意义。
+ * [codeName]（ERROR_CODE_*）只作为日志线索塞进 detail，不参与界面文案。
+ */
+@OptIn(UnstableApi::class)
+private fun classifyExoError(code: Int, codeName: String): PlayerError = when (code) {
+    PlaybackException.ERROR_CODE_DECODING_FAILED,
+    PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
+    PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES,
+    PlaybackException.ERROR_CODE_DECODING_RESOURCES_RECLAIMED,
+    PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+    PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED,
+    -> PlayerError.Codec(codeName)
+
+    PlaybackException.ERROR_CODE_IO_UNSPECIFIED,
+    PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+    PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
+    PlaybackException.ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE,
+    PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
+    PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,
+    PlaybackException.ERROR_CODE_IO_NO_PERMISSION,
+    PlaybackException.ERROR_CODE_IO_CLEARTEXT_NOT_PERMITTED,
+    PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE,
+    PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
+    PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED,
+    PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
+    PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED,
+    -> PlayerError.Source(codeName)
+
+    else -> PlayerError.Unknown(codeName)
+}
+
+/**
+ * IJK 的 what/extra → 结构化播放错误。
+ *
+ * what 里只有 MEDIA_ERROR_* 这几码有可行动的含义；SERVER_DIED / UNKNOWN 一律归 Unknown，
+ * 因为用户对它们能做的事和「解码失败」「片源坏了」都不同，只多一句「换内核试试」没意义。
+ * what/extra 原样塞进 detail，只进日志。
+ */
+private fun classifyIjkError(what: Int, extra: Int): PlayerError {
+    val detail = "what=$what extra=$extra"
+    return when (what) {
+        IMediaPlayer.MEDIA_ERROR_IO,
+        IMediaPlayer.MEDIA_ERROR_MALFORMED,
+        IMediaPlayer.MEDIA_ERROR_UNSUPPORTED,
+        IMediaPlayer.MEDIA_ERROR_TIMED_OUT,
+        IMediaPlayer.MEDIA_ERROR_NOT_VALID_FOR_PROGRESSIVE_PLAYBACK,
+        -> PlayerError.Source(detail)
+
+        else -> PlayerError.Unknown(detail)
     }
 }
 
@@ -233,8 +296,10 @@ internal class ExoEngine(
 
             override fun onPlayerError(error: PlaybackException) {
                 if (released) return
-                // errorCodeName 比 message 更稳定，message 里常带一长串 URL
-                listener?.onError("${error.errorCodeName}: ${error.message}")
+                // errorCodeName 比 message 更稳定；message 里常带一长串 URL 与签名，
+                // 那类技术信息只进日志，交给 UI 的只有错误码
+                Log.w(TAG, "播放失败：${error.errorCodeName}: ${error.message}")
+                listener?.onError(classifyExoError(error.errorCode, error.errorCodeName))
             }
 
             override fun onVideoSizeChanged(videoSize: VideoSize) {
@@ -485,7 +550,9 @@ internal class IjkEngine(
             mainHandler.removeCallbacks(pollRunnable)
             cachedPlaying = false
             listener?.onBufferingChanged(false)
-            listener?.onError("IJK 错误 what=$what extra=$extra")
+            // what/extra 是技术串，只进日志；UI 只收错误码
+            Log.w(TAG, "IJK 播放失败 what=$what extra=$extra")
+            listener?.onError(classifyIjkError(what, extra))
             // 返回 true 表示已处理，避免 IJK 再抛到自己的默认分支里
             true
         }
@@ -556,7 +623,10 @@ internal class IjkEngine(
             p.setDataSource(appContext, android.net.Uri.parse(url))
             p.prepareAsync()
         } catch (t: Throwable) {
-            listener?.onError("IJK 起播失败：${t.javaClass.simpleName}: ${t.message}")
+            // setDataSource/prepareAsync 抛说明连片源都没接上（地址失效、so 缺失等），
+            // 归到片源失败：用户在播放页能做的只有换清晰度 / 换内核 / 重试
+            Log.w(TAG, "IJK 起播失败：${t.javaClass.simpleName}: ${t.message}")
+            listener?.onError(PlayerError.Source(t.javaClass.simpleName))
         }
     }
 

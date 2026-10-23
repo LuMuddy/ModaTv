@@ -2,6 +2,7 @@ package com.moda.tv.ui
 
 import android.content.Context
 import android.util.Log
+import androidx.annotation.StringRes
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -9,7 +10,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.moda.tv.R
 import com.moda.tv.data.Api
+import com.moda.tv.data.ApiException
 import com.moda.tv.data.Repo
 import com.moda.tv.data.SaveOutcome
 import com.moda.tv.data.local.ApiEndpoint
@@ -32,6 +35,7 @@ import com.moda.tv.data.local.PlayerSettings
 import com.moda.tv.data.local.PlayerSettingsStore
 import com.moda.tv.data.local.PlayerSettingsStoreImpl
 import com.moda.tv.data.local.SearchHistoryStoreImpl
+import com.moda.tv.model.AppError
 import com.moda.tv.model.Danmaku
 import com.moda.tv.model.Episode
 import com.moda.tv.model.HomeFeed
@@ -39,6 +43,8 @@ import com.moda.tv.model.HomeTab
 import com.moda.tv.model.LibraryEntry
 import com.moda.tv.model.SeriesDetail
 import com.moda.tv.model.Tier
+import java.io.IOException
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -63,7 +69,8 @@ import kotlinx.coroutines.sync.withPermit
 /** 播放页的三种装配结果；Composable 只按状态渲染，不再自己判断加载时序 */
 sealed interface PlayerUi {
     data object Loading : PlayerUi
-    data class Error(val message: String) : PlayerUi
+    /** 装配失败只给错误码：文案由 UI 层按当前系统语言渲染（见 components/appErrorText） */
+    data class Error(val error: AppError) : PlayerUi
     data class Ready(
         val cid: String,
         val vid: String,
@@ -74,7 +81,6 @@ sealed interface PlayerUi {
         val hlsUrl: String?,
         val tiers: List<Tier>,
         val selectedTier: Tier?,
-        val danmaku: List<Danmaku>,
         val startPositionMs: Long,
         // 选集浮层用的集数表；默认空表，不影响其它构造点
         val episodes: List<Episode> = emptyList(),
@@ -135,9 +141,23 @@ data class DetailResume(
  */
 data class HomeRefreshNotice(
     val success: Boolean,
-    val message: String,
+    /** 文案资源 id 而不是字符串：ViewModel 不持有任何语言，UI 用 stringResource 解析 */
+    @param:StringRes val messageRes: Int,
     val tick: Int,
 )
+
+/**
+ * 异常 → 错误码。全 ViewModel 只有这一处做归一。
+ *
+ * 屏幕层拿不到 throw，所以「失败分类」必须在这里就落到 [AppError] 上；
+ * 一旦这里把 e.message 原样带出去，数据层的技术文本（甚至中文）就会被直接上屏，
+ * 系统语言切到英文时又收不回来。原始异常只进日志。
+ */
+private fun Throwable.toAppError(): AppError = when (this) {
+    is ApiException -> error
+    is IOException -> AppError.Network
+    else -> AppError.Unknown
+}
 
 class TvViewModel(private val app: Context) : ViewModel() {
 
@@ -272,10 +292,10 @@ class TvViewModel(private val app: Context) : ViewModel() {
     val homeLoading: Boolean get() = loadingTabs[homeTab] == true
 
     /**
-     * 首页错误文案。**只有「缓存也没有 + 网络也失败」时才会非 null**：
+     * 首页错误码（文案由 UI 层用 appErrorText 渲染）。**只有「缓存也没有 + 网络也失败」时才会非 null**：
      * 缓存在的时候再把错误糊到用户脸上没有意义，他看到的本来就是能用的内容。
      */
-    var homeError by mutableStateOf<String?>(null)
+    var homeError by mutableStateOf<AppError?>(null)
         private set
 
     /**
@@ -326,7 +346,7 @@ class TvViewModel(private val app: Context) : ViewModel() {
         private set
     var detailLoading by mutableStateOf(false)
         private set
-    var detailError by mutableStateOf<String?>(null)
+    var detailError by mutableStateOf<AppError?>(null)
         private set
     var detailTier by mutableStateOf<Tier?>(null)
         private set
@@ -336,6 +356,20 @@ class TvViewModel(private val app: Context) : ViewModel() {
     var player by mutableStateOf<PlayerUi>(PlayerUi.Loading)
         private set
     private var playerJob: Job? = null
+
+    /**
+     * 当前滑动窗口内的弹幕，播放页的**唯一**来源。
+     * PlayerUi.Ready 里不再留快照：同一份数据两个入口，换集时旧列表还会挂在 Ready 上，
+     * 屏幕就会在新一集的画面上把上一集的弹幕画出来。
+     */
+    var danmakuWindow by mutableStateOf<List<Danmaku>>(emptyList())
+        private set
+    private var danmakuJob: Job? = null
+    /** 已装载窗口的起点；[DANMAKU_NOT_LOADED] 表示当前还没有可用窗口 */
+    private var danmakuWindowStart = DANMAKU_NOT_LOADED
+    /** 已装载窗口属于哪一集：位置可能一样，集不一样，用来拦住跨集的滞后结果 */
+    private var danmakuWindowVid: String? = null
+
     /** 当前剧集的集数表，连播靠它找下一集 */
     private var episodes: List<Episode> = emptyList()
     private var playTitle: String = ""
@@ -599,6 +633,9 @@ class TvViewModel(private val app: Context) : ViewModel() {
             // 用户要的是「数据换成新的」，不是「页面重来一遍」——转圈、占位、列表闪一下
             // 都是对被刷新内容的打断，而这一屏本来就还能看。
             HomeTab.entries.forEach { loadingTabs[it] = homeFeeds[it]?.items.isNullOrEmpty() }
+            // 整页失败时要给用户一个具体原因，但 19 个并发分支只会得到同一句话：
+            // 用原子引用保留先到的那一条，不为了一个提示去改每个分支的返回结构
+            val pageError = AtomicReference<AppError?>(null)
             // 每个 tab 的 (tab, 条目, 完成时刻)；失败或为空的 tab 条目为空，不进最终结果
             val fetched = try {
                 coroutineScope {
@@ -623,7 +660,8 @@ class TvViewModel(private val app: Context) : ViewModel() {
                                 } catch (e: CancellationException) {
                                     throw e
                                 } catch (e: Exception) {
-                                    Log.w("TvViewModel", "整页刷新「${tab.title}」异常：${e.message}")
+                                    Log.w("TvViewModel", "整页刷新「${tab.name}」异常：${e.message}")
+                                    pageError.compareAndSet(null, e.toAppError())
                                     emptyList()
                                 }
                                 Triple(tab, items, System.currentTimeMillis())
@@ -675,7 +713,7 @@ class TvViewModel(private val app: Context) : ViewModel() {
                 // 一个都没拿到（断网 / 全空）：不更新 homeFetchedAt、不写盘、旧内容原样留着，
                 // 只有当前 tab 本来就没内容时才把错误摆到用户面前
                 if (homeFeeds[homeTab]?.items.isNullOrEmpty()) {
-                    homeError = "首页加载失败，请检查网络后重试"
+                    homeError = pageError.get() ?: AppError.Unknown
                 }
                 Log.w("TvViewModel", "整页刷新（$reason）没有拿到任何数据，保留旧内容")
             } else {
@@ -686,7 +724,7 @@ class TvViewModel(private val app: Context) : ViewModel() {
             refreshNoticeTick += 1
             homeRefreshNotice = HomeRefreshNotice(
                 success = !keptOld,
-                message = if (keptOld) "刷新失败，已保留原有内容" else "刷新完成",
+                messageRes = if (keptOld) R.string.state_refresh_failed_kept else R.string.state_refresh_done,
                 tick = refreshNoticeTick,
             )
         }
@@ -743,9 +781,11 @@ class TvViewModel(private val app: Context) : ViewModel() {
                     // 网络没拿到东西：缓存有内容就**保持原样且不报错**（需求 9「默认用老的数据」），
                     // 缓存也没有才让用户看到错误
                     if (homeFeeds[tab]?.items.isNullOrEmpty()) {
-                        homeError = "首页加载失败，请检查网络后重试"
+                        // 一条都没拿到 = 这一屏这次确实是空的，与「断网」区分开：
+                        // 用户看到「空」与「网络错」时该做的事不一样
+                        homeError = AppError.EmptyPayload
                     }
-                    Log.w("TvViewModel", "首页「${tab.title}」为空")
+                    Log.w("TvViewModel", "首页「${tab.name}」为空")
                     return@launch
                 }
 
@@ -762,8 +802,8 @@ class TvViewModel(private val app: Context) : ViewModel() {
                 throw e
             } catch (e: Exception) {
                 // 仓储层已经吞过绝大多数异常，这里是最后一道保险：宁可少一次刷新也不能崩
-                Log.w("TvViewModel", "首页「${tab.title}」加载异常：${e.message}")
-                if (homeFeeds[tab]?.items.isNullOrEmpty()) homeError = "首页加载失败，请检查网络后重试"
+                Log.w("TvViewModel", "首页「${tab.name}」加载异常：${e.message}")
+                if (homeFeeds[tab]?.items.isNullOrEmpty()) homeError = e.toAppError()
             } finally {
                 // 只有「当前这个任务」才有资格清 loading，见上面 token 的说明
                 if (feedTokens[tab] === token) loadingTabs[tab] = false
@@ -831,7 +871,7 @@ class TvViewModel(private val app: Context) : ViewModel() {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                detailError = e.message ?: "剧集加载失败"
+                detailError = e.toAppError()
             } finally {
                 detailLoading = false
             }
@@ -1122,6 +1162,8 @@ class TvViewModel(private val app: Context) : ViewModel() {
 
     private fun startPlayer(dest: Dest.Player) {
         playerJob?.cancel()
+        // 换集/重进先清空弹幕：上一集的窗口既不该显示，也不该被复用
+        resetDanmakuWindow()
         player = PlayerUi.Loading
         lastPosMs = 0L
         lastDurMs = 0L
@@ -1142,19 +1184,21 @@ class TvViewModel(private val app: Context) : ViewModel() {
                 playTitle = series.title.ifBlank { title }
                 // b) 档位 + 整片 hls
                 val info = Repo.episodeInfo(dest.vid)
-                // c) 没有可用档位就是错误态；硬造一个档位只会得到空直链
+                // c) 没有可用档位就是错误态；硬造一个档位只会得到空直链。
+                //    这里直接落错误态而不是抛异常：需要的只是 AppError.NoVideo 这个分类，
+                //    异常文本除了进日志没有第二个去处
                 val tier = Repo.pickBestTier(info.tiers)
-                    ?: throw IllegalStateException("没有可用的清晰度，无法播放")
+                if (tier == null) {
+                    Log.w("TvViewModel", "没有可用的清晰度，无法播放：${dest.vid}")
+                    player = PlayerUi.Error(AppError.NoVideo)
+                    return@launch
+                }
                 // d) 档位换直链
                 val link = Repo.playLink(tier)
-                // e) 弹幕失败不能阻塞播放：Repo 内部已降级，这里再兜一层
-                val danmaku = try {
-                    Repo.danmaku(dest.vid, 0L, DANMAKU_WINDOW_MS)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    emptyList()
-                }
+                // e) 弹幕不再等在这里。旧实现要等一整段弹幕回来才发 Ready，
+                //    后端一慢起播就跟着慢（而 30 分钟区间必然被拒，等于白等一场）。
+                //    现在只算一下起播位置，Ready 立刻发出，弹幕窗口随后异步装（见 ensureDanmakuWindow）。
+                val startPos = resumePosition(dest.cid, episodeIndex)
                 player = PlayerUi.Ready(
                     cid = dest.cid,
                     vid = dest.vid,
@@ -1166,20 +1210,77 @@ class TvViewModel(private val app: Context) : ViewModel() {
                     hlsUrl = link.hlsUrl.ifBlank { null },
                     tiers = info.tiers,
                     selectedTier = tier,
-                    danmaku = danmaku,
-                    startPositionMs = resumePosition(dest.cid, episodeIndex),
+                    startPositionMs = startPos,
                     episodes = series.episodes,
                 )
+                // 画面已经在路上，弹幕只是补在后面：起播路径上不存在任何弹幕 await。
+                // force = true：换集后位置可能和上一集一模一样，不能靠位置判断要不要装。
+                ensureDanmakuWindow(dest.vid, startPos, force = true)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                player = PlayerUi.Error(e.message ?: "播放装配失败")
+                // 原始 message 只进日志：上屏文案由 appErrorText 按系统语言渲染
+                Log.w("TvViewModel", "起播装配失败：${e.message}")
+                player = PlayerUi.Error(e.toAppError())
             }
         }
     }
 
     fun retryPlayer() {
         (current as? Dest.Player)?.let { startPlayer(it) }
+    }
+
+    /**
+     * 装载/换窗。窗口 = [pos - LEAD, pos - LEAD + LENGTH)，总长 60s：
+     * 后端单次 barrage 实测 120s 内可用、150s 起整单失败，60s 稳稳落在安全区，
+     * 一次 HTTP 就装满，常态下连 Repo 的切片都不需要。
+     *
+     * 换窗条件是「进度越过窗口起点 30s」，不是「进度离开窗口末尾」：
+     * 进度每秒上报一次，按窗口边界判断就变成每秒一次请求；而剩 30s 缓冲时再换，
+     * 仍远大于一次请求的实测耗时（0.4~1.0s），片尾不会出现空档。
+     *
+     * [force] 给换集/重试用：位置可能和上一次窗口完全一样，内容却是别的集。
+     */
+    private fun ensureDanmakuWindow(vid: String, positionMs: Long, force: Boolean = false) {
+        val pos = positionMs.coerceAtLeast(0L)
+        // 起点不能为负（后端不接受负区间）：片头 15 秒内窗口自然收缩成 [0, pos+45s)
+        val start = (pos - DANMAKU_LEAD_MS).coerceAtLeast(0L)
+        val reusable = !force &&
+            danmakuWindowVid == vid &&
+            danmakuWindowStart != DANMAKU_NOT_LOADED &&
+            pos >= danmakuWindowStart &&
+            pos <= danmakuWindowStart + DANMAKU_REFRESH_WITHIN_MS
+        if (reusable) return
+        // 新窗口开始就取消上一片的请求：连按 seek 不该积一堆没人要的结果
+        danmakuJob?.cancel()
+        danmakuWindowVid = vid
+        danmakuWindowStart = start
+        danmakuJob = viewModelScope.launch {
+            val list = try {
+                Repo.danmaku(vid, start, start + DANMAKU_LENGTH_MS)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Repo 内部已降级，这层只保证异常不会逃出协程
+                emptyList()
+            }
+            // 结果回来时这一片可能已经不是当前窗口（用户 seek 走了）：丢掉结果，
+            // 否则上一段位置的弹幕会飘进当前画面。
+            if (danmakuWindowVid != vid || danmakuWindowStart != start) return@launch
+            // 上一集的弹幕不许飘到这一集：播放状态必须还是同一个 vid
+            if ((player as? PlayerUi.Ready)?.vid != vid) return@launch
+            // 空列表同样要赋值：本窗口确实没有弹幕，留着旧值反而会画出已经播过的那一段
+            danmakuWindow = list
+        }
+    }
+
+    /** 清空窗口状态。换集 / 重试 / 重进播放页这些会话边界都要走这里 */
+    private fun resetDanmakuWindow() {
+        danmakuJob?.cancel()
+        danmakuJob = null
+        danmakuWindow = emptyList()
+        danmakuWindowVid = null
+        danmakuWindowStart = DANMAKU_NOT_LOADED
     }
 
     /** 只有同一集的断点才值得续播，换集从头开始 */
@@ -1201,7 +1302,12 @@ class TvViewModel(private val app: Context) : ViewModel() {
     private fun labelOf(episodeIndex: Int, vid: String): String {
         val label = episodes.firstOrNull { it.index == episodeIndex }?.label.orEmpty()
         // 没有元数据时 label 会退化成 vid，直接展示会是一串乱码
-        return if (label.isNotBlank() && label != vid) label else "第 ${episodeIndex} 集"
+        // 兜底句走资源：它是固定文案，不属于接口元数据，藏成中文字面量会让英文系统露出破绽
+        return if (label.isNotBlank() && label != vid) {
+            label
+        } else {
+            app.getString(R.string.state_episode_index, episodeIndex)
+        }
     }
 
     /**
@@ -1263,6 +1369,10 @@ class TvViewModel(private val app: Context) : ViewModel() {
         val snapshot = player as? PlayerUi.Ready ?: return
         if (positionMs > 0L) lastPosMs = positionMs
         if (durationMs > 0L) lastDurMs = durationMs
+        // 弹幕窗口只由这里驱动（进度每秒上报一次，seek 后的第一次上报也走它），
+        // 不另起轮询。必须放在下面几条提前 return 之前：完成结算与去重那两条
+        // 会直接 return，窗口一旦被它们挡住就会钉死在旧位置。
+        ensureDanmakuWindow(snapshot.vid, lastPosMs)
 
         // 完成线一过就立刻结算，不等 5 秒节流窗口：这一瞬间之后就不再写历史了，
         // 拖到下一个窗口可能永远等不到（用户正好在 95% 处退出播放页）
@@ -1381,12 +1491,23 @@ class TvViewModel(private val app: Context) : ViewModel() {
     /**
      * 与 [saveApiBase] 同一套校验，但返回结构化结果。
      * 局域网弹窗用它拿到"规范化后的实际地址"，从而回显真正生效的那一条。
+     *
+     * [SaveOutcome.Fail] 携带的仍是**本地化好的句子**而不是 [AppError]：这条 reason
+     * 会被局域网页面直接拼进手机端 HTML，而 [AppError] 里没有承载「输入校验失败」的类别。
+     * 所以三处失败原因一律取 string 资源——不写字面量，界面与手机页面才会同时有中英两份。
      */
     suspend fun commitApiBase(raw: String): SaveOutcome {
         val normalized = ApiEndpoint.normalize(raw)
-            ?: return SaveOutcome.Fail("地址格式不对：必须以 http:// 或 https:// 开头，且包含主机名")
+            ?: return SaveOutcome.Fail(app.getString(R.string.state_settings_url_format))
         val failure = ApiEndpoint.probe(normalized)
-        if (failure != null) return SaveOutcome.Fail("地址不可用：$failure")
+        if (failure != null) {
+            // probe 只带资源 id（数据层不持文案），句子在这里按当前语言取；
+            // detail 是 HTTP 状态码 / okhttp 原文这类技术信息，只填进 %1$s 占位符
+            val reason = failure.detail
+                ?.let { app.getString(failure.messageRes, it) }
+                ?: app.getString(failure.messageRes)
+            return SaveOutcome.Fail(app.getString(R.string.state_settings_url_unreachable, reason))
+        }
         return try {
             apiSettings.save(normalized)
             // 先落盘再切内存值：保存失败时用户看到的仍是旧地址，不会出现"界面新、请求旧"
@@ -1395,7 +1516,9 @@ class TvViewModel(private val app: Context) : ViewModel() {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            SaveOutcome.Fail("保存失败：${e.message ?: "本地存储不可写"}")
+            Log.w("TvViewModel", "代理网址落盘失败：${e.message}")
+            val reason = app.getString(R.string.state_settings_storage_unwritable)
+            SaveOutcome.Fail(app.getString(R.string.state_settings_save_failed, reason))
         }
     }
 
@@ -1429,7 +1552,28 @@ class TvViewModel(private val app: Context) : ViewModel() {
 
     private companion object {
         const val WRITE_INTERVAL_MS = 5_000L
-        const val DANMAKU_WINDOW_MS = 30 * 60 * 1000L
+
+        /** 「还没有可用窗口」的哨兵。0 是合法起点（片头），不能拿它表示未装载 */
+        const val DANMAKU_NOT_LOADED = -1L
+
+        /**
+         * 窗口往前带 15s：滚动弹幕在屏寿命 8s 出头（DanmakuOverlay 的 ScrollDurationMs），
+         * 15s 足够把「刚滚过去、屏幕上还看得见」的那几条一起带进来，换窗时画面不会凭空少一截。
+         */
+        const val DANMAKU_LEAD_MS = 15_000L
+
+        /**
+         * 窗口总长 60s。后端实测 120s 内可用、150s 起失败，60s 留足余量；
+         * 同时小于 Repo 的单片上限（90s），所以常态下一次请求就是一片。
+         */
+        const val DANMAKU_LENGTH_MS = 60_000L
+
+        /**
+         * 换窗阈值：进度还在「窗口起点 + 30s」以内就继续用旧窗口。
+         * 此时窗口里还剩 30s 内容没用上，远大于一次请求的实测耗时（0.4~1.0s）；
+         * 若改成按窗口末尾判断，进度每秒上报一次就会变成每秒一次 HTTP。
+         */
+        const val DANMAKU_REFRESH_WITHIN_MS = 30_000L
 
         /** 整页刷新时同时最多几个 tab：见 refreshAllHome 的说明，别调大 */
         const val HOME_TAB_PARALLEL = 6
