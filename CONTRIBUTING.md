@@ -89,3 +89,12 @@ git config core.hooksPath .githooks
 
 之后 `git commit` 会校验提交信息，不合规直接拒绝。
 `git commit --no-verify` 可跳过，仅限紧急情况。
+
+同目录还有一个 `pre-commit` 内容扫描（提交前检查暂存区）：
+
+- 拒绝 `local.properties`、`.idea/`、`*.jks` / `*.keystore` / `*.p12`、`.env`；
+- 拒绝被填上值的 `modatv.deviceToken` / `deviceFp` / `hotWordsApp*`（示例文件里必须留空）；
+- 拒绝疑似密钥字面量、32 位以上十六进制 / 40 位以上 base64 串；
+- 拒绝公网 IP（loopback、通配、内网段与文档示例段放行）。
+
+截图等二进制文件扫不到，**提交前自己看一眼图里有没有地址**。

@@ -92,3 +92,7 @@ ui/*Screen.kt ──▶ TvViewModel ──▶ Repo ──▶ Api / CarouselSourc
   项目没有单元测试与 CI，手动走查就是唯一验收手段——所以别只编译不点。
 - **不要提交** `local.properties`、`.idea/`、`build/` 或任何真实 token / 指纹 / appKey；
   敏感值只放 `local.properties`，由 `app/build.gradle.kts` 注入成 `BuildConfig`。
+  `.githooks/pre-commit` 会在提交前扫公网 IP、凭据键值与长密钥串，命中直接拒绝——
+  被它拦下时先确认是真泄露还是误报，不要习惯性地 `--no-verify`。
+- **截图属于代码**：仓库是公开的，图里的代理地址、搜索词一样会泄露。
+  截图前把地址改成示例值，或提交前打码。
