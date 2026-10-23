@@ -13,10 +13,18 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
@@ -102,6 +110,8 @@ fun ErrorState(
     message: String,
     modifier: Modifier = Modifier,
     onRetry: (() -> Unit)? = null,
+    /** 首焦点落点：整屏只有一个按钮时，焦点必须已经在它上面，否则用户按确认没反应 */
+    retryFocus: FocusRequester? = null,
 ) {
     Column(
         modifier.fillMaxSize().padding(48.dp),
@@ -120,7 +130,12 @@ fun ErrorState(
         )
         if (onRetry != null) {
             Spacer(Modifier.height(24.dp))
-            ActionButton(text = "重试", onClick = onRetry, primary = true)
+            ActionButton(
+                text = "重试",
+                onClick = onRetry,
+                primary = true,
+                modifier = if (retryFocus != null) Modifier.focusRequester(retryFocus) else Modifier,
+            )
         }
     }
 }
@@ -130,6 +145,8 @@ fun EmptyState(
     message: String,
     modifier: Modifier = Modifier,
     onRetry: (() -> Unit)? = null,
+    /** 同 [ErrorState.retryFocus]：空态里唯一的可点项就是「重新加载」 */
+    retryFocus: FocusRequester? = null,
 ) {
     Column(
         modifier.fillMaxSize().padding(48.dp),
@@ -144,7 +161,12 @@ fun EmptyState(
         )
         if (onRetry != null) {
             Spacer(Modifier.height(24.dp))
-            ActionButton(text = "重新加载", onClick = onRetry, primary = true)
+            ActionButton(
+                text = "重新加载",
+                onClick = onRetry,
+                primary = true,
+                modifier = if (retryFocus != null) Modifier.focusRequester(retryFocus) else Modifier,
+            )
         }
     }
 }
@@ -172,29 +194,32 @@ fun SectionTitle(text: String, modifier: Modifier = Modifier) {
  *   | 点击 | scale 1.0~0.95 + 换色 | 不扩，但换色块本身要完整可见 |
  *   | 发光 | glow 半径（API 28+） | 再外扩数个 dp |
  *
- * 而 `LazyVerticalGrid` 的**视口**会把超出的绘制裁掉，`contentPadding` 又只在列表两端
- * 提供空间。于是真机上表现为：「光标压到最底部时，卡片下沿的白边 / 点击高亮被切平」。
+ * 而 `LazyVerticalGrid` 的**视口**会把超出的绘制裁掉。于是真机上表现为：
+ * 「光标压到最底部时，卡片下沿的白边 / 点击高亮被切平」。
  *
- * ## 四条规则，缺一不可
+ * ## 规则（纵向与横向的余量**位置**不同，这是 2026-10 实测纠正过的）
  *
- * 1. [SidePad] 侧边对齐工具栏，同时兜住横向溢出。
- * 2. [TailPad] **最后一项之后**必须留出的空白（滚到末尾时生效）。
- * 3. [ListBottomSafe] **容器**与屏幕底边的安全边（光标停在中间行时生效）。
- * 4. [listItemInset] **每个列表项自身**的溢出余量（任何一行都生效）。
+ * 1. [SidePad] 侧边对齐工具栏；同时也是横向溢出的余量。
+ * 2. [TailPad] **最后一项之后**的留白，属于 contentPadding——列表末端才有内容可滚。
+ * 3. **顶部**余量必须写进 contentPadding（视口之内）。焦点滚动会把被聚焦项顶到视口边，
+ *    写在 modifier 上（视口之外）的留白它一点都用不上——这是 2026-10 真机复现修正的结论，
+ *    原先"纵向余量一律写视口之外"的说法是错的。
  *
- * 第 2、3、4 条解决的是三个不同位置的裁剪，任何一条缺失都会在某个滚动位置翻车——
- * 这正是「改一次好一次、换个位置又被吃」的原因。
+ * 4. **真正让焦点框不被切的办法是不放大**：tv-material 的 scale 只改绘制、不改布局，
+ *    超出视口的绘制必然被 Lazy 视口裁掉，留白再多也只是把裁剪线挪了个位置
+ *    （实测：网格首行卡片聚焦后上沿、tab 栏第一个 tab 的左沿都会缺一条边）。
+ *    所以卡片/档位条一律 focusedScale = 1f，焦点只靠描边与底色表达，见 Cards.kt。
+ *
+ * 横向：网格固定列数、不横向滚动，那份 padding 不会被吃掉，所以留在视口内的 contentPadding；
+ * 而**会横向滚动的 LazyRow（tab 栏、选集轨道、缩略图行、热词行）必须改用 [railScrollRoom]**。
  *
  * ## 标准用法
  *
  * ```kotlin
- * Box(Modifier.fillMaxSize().listBottomSafe()) {              // 规则 3
- *     LazyVerticalGrid(
- *         contentPadding = ListMetrics.gridContentPadding(),  // 规则 1 + 2
- *     ) {
- *         items(...) { Card(modifier = Modifier.listItemInset()) { ... } }  // 规则 4
- *     }
- * }
+ * LazyVerticalGrid(
+ *     modifier = Modifier.fillMaxSize().gridScrollRoom(),     // 规则 3（视口之外）
+ *     contentPadding = ListMetrics.gridContentPadding(),      // 规则 1 + 2（只有横向 + 尾部）
+ * ) { items(...) { Card(Modifier.fillMaxWidth()) { ... } } }
  * ```
  */
 object ListMetrics {
@@ -209,43 +234,165 @@ object ListMetrics {
     val ListBottomSafe: Dp = 24.dp
 
     /**
-     * 规则 4 的数值：单个列表项为聚焦/发光预留的垂直余量。
-     *
-     * 取 12dp 的依据：卡片高约 120~200dp，scale 1.08 上下各外扩约 5~8dp，
-     * 再加 3dp 描边与 API 28+ 的 glow，单边最坏约 11dp。留 12 才覆盖得住。
+     * 网格顶边与它上方内容（tab 栏 / 标题）之间的余量。
+     * 与 [ListBottomSafe] 一样必须落在视口之外，见 [gridScrollRoom]。
      */
-    val ItemFocusInset: Dp = 12.dp
+    val GridTopRoom: Dp = 8.dp
 
     /**
-     * 标准网格内边距 = 规则 1 + 规则 2。顶部由调用方按各页头部高度决定。
+     * 标准网格内边距 = 规则 1 + 规则 2。
+     *
+     * top 默认给 0：**竖向**的余量一律留给 [gridScrollRoom]（写在视口之外）。
+     * 只要顶部这一段是 contentPadding，焦点滚动就会先把它吃掉，
+     * 「上滚回不到最上面」正是这么来的（见 [gridScrollRoom] 的实测记录）。
      */
-    fun gridContentPadding(top: Dp = 16.dp, side: Dp = SidePad, tail: Dp = TailPad): PaddingValues =
+    fun gridContentPadding(top: Dp = 0.dp, side: Dp = SidePad, tail: Dp = TailPad): PaddingValues =
         PaddingValues(start = side, end = side, top = top, bottom = tail)
 
 }
 
 /**
- * 规则 4：列表项必须套的修饰。**每个列表项都要加**，不要只加第一行或最后一行——
- * 因为滚动位置会变，「最后一行」不是固定的某一项。
+ * 滚动方向上的边缘余量，必须套在**列表自己的 modifier** 上（视口之外）。
  *
- * 垂直 12dp 是抗裁主力（上下都可能是视口边界）；水平 2dp 只用来避免第一列聚焦时
- * 左边框紧贴 SidePad 显得偏窄。
+ * 为什么不能写成 contentPadding：contentPadding 属于视口内部，焦点滚动会先把它吃掉。
+ * 实测（模拟器、1080p）——网格顶部 contentPadding = 16dp 时，下滑再上滑，列表稳定停在
+ * offset = 16dp 而不是 0：屏幕最上面永远切着上一行的半截标题，这就是"上滑回不到最上面"。
+ * 把同样的 16dp 写进 contentPadding 之外的 padding，视口本身变小，offset 0 就重新可达，
+ * 回到顶部与刚进页面时像素一致。
  *
- * 必须是**顶层扩展函数**而不是 ListMetrics 的成员：Kotlin 的成员扩展函数只能在声明它的
- * 类作用域内当扩展用，在 UI 文件里写 `Modifier.fillMaxWidth().listItemInset()` 会
- * Unresolved reference（已经踩过一次）。
+ * 底部同理：最后一行被焦点滚动顶到视口下沿时，卡片下沿的圆角、3dp 描边与聚焦放大
+ * （scale 1.06，每边约 5~7dp）都会被视口裁平——"下滑时最下面的数据被遮一点"。
+ * 视口下沿让出 [ListMetrics.ListBottomSafe] 之后，贴边对齐的是视口而不是屏幕。
  */
-fun Modifier.listItemInset(): Modifier =
-    // 实验：暂时取消 padding，验证是否为它导致下描边被裁
-    this
+fun Modifier.gridScrollRoom(
+    top: Dp = ListMetrics.GridTopRoom,
+    bottom: Dp = ListMetrics.ListBottomSafe,
+): Modifier = this.padding(top = top, bottom = bottom)
 
 /**
- * 规则 3：列表容器必须套的安全边。每个「包住滚动列表」的 Box 都该套上：
+ * 横向轨道（LazyRow）的边缘余量，必须套在**轨道自己的 modifier** 上（视口之外）。
  *
- *     Box(Modifier.fillMaxSize().listBottomSafe()) { LazyVerticalGrid(...) }
+ * 与 [gridScrollRoom] 是同一条实测结论：余量一旦写在 contentPadding 里，焦点滚动会先吃掉它——
+ * 按「右」推到末尾再按「左」回第一个 chip，第一个 chip 会与页头左缘差一截，
+ * 它左外侧的聚焦放大也被切平。差别只在横向不会切断文字：内容都落在项自己的布局盒里，
+ * 贴住视口边的只有放大/发光的外沿。
  *
- * 只写 contentPadding 是不够的——那是规则 2，只在滚到末尾生效；
- * 光标停在中间行时裁的是容器边界，必须靠这条。
+ * 纵向余量（若有）仍留在 contentPadding：那条轴不滚动，不会被吃掉。
+ */
+fun Modifier.railScrollRoom(horizontal: Dp): Modifier = this.padding(horizontal = horizontal)
+
+/**
+ * TV 的网格焦点滚动规则：**按行跟焦**，且整行可见。
+ *
+ * 为什么不能用系统默认的焦点滚动（BringIntoViewSpec / "刚好露出一点"）：
+ * 那是给触摸滚动和鼠标滚轮设计的。TV 只有按键：
+ *
+ * 1. 焦点一次移动一行。列表必须跟着"整行"走，任何一行都不该被切成半截——
+ *    半截行会让人以为数据没了（"下下下之后那块区域没显示"就是这么来的）。
+ * 2. 连按方向键时，焦点事件比滚动动画快。系统那套是"滚动到刚好可见"，
+ *    连按几下后它算的距离会被后一次覆盖，最后一个焦点行经常还停在视口外。
+ *    所以这里不依赖系统那套：每次焦点落到某项，就直接量它的实际位置，
+ *    缺多少补多少（一次滚到位，不做动画，连按也不掉队）。
+ * 3. 上下都留 [comfort] 的呼吸空间，避免被聚焦行贴住 tab 栏或屏幕下沿。
+ *
+ * @param focusedIndex 当前被聚焦项的下标；-1 表示没有（例如焦点在 tab 栏上）
+ * @param columns 网格列数，用来判断"这一行"的整体上下沿
+ */
+@Composable
+fun TvGridFocusScroll(
+    state: LazyGridState,
+    focusedIndex: Int,
+    columns: Int,
+    comfort: Dp = 16.dp,
+) {
+    val comfortPx = with(LocalDensity.current) { comfort.toPx() }
+    LaunchedEffect(state, focusedIndex, columns) {
+        if (focusedIndex < 0) return@LaunchedEffect
+        val rowStart = focusedIndex - focusedIndex % columns
+        val rowEnd = rowStart + columns - 1
+        val info = state.layoutInfo
+        // 这一行在视口里的实际上下沿（同行各项同高，取并集最稳）
+        val rowItems = info.visibleItemsInfo.filter { it.index in rowStart..rowEnd }
+        if (rowItems.isEmpty()) {
+            // 整行还没布局出来（连按跳了很远）：先按行跳过去，下一次焦点事件再微调
+            state.scrollToItem(rowStart)
+            return@LaunchedEffect
+        }
+        val top = rowItems.minOf { it.offset.y.toFloat() }
+        // LazyGridItemInfo.size 是 IntSize，纵向高度取 height
+        val bottom = rowItems.maxOf { (it.offset.y + it.size.height).toFloat() }
+        val viewport = info.viewportSize.height.toFloat()
+        val delta = when {
+            top < comfortPx -> top - comfortPx
+            bottom > viewport - comfortPx -> bottom - (viewport - comfortPx)
+            else -> 0f
+        }
+        // scrollBy 是"立即"滚，不是动画：连按时每一次按键都当场把行摆好，
+        // 不会出现"按了三下、画面还在追第一下"的错位
+        if (delta != 0f) state.scrollBy(delta)
+    }
+}
+
+/**
+ * 规则 R1 的实现：**进页面就把焦点摆到该在的地方**。
+ *
+ * 电视上没有鼠标，焦点空着 = 遥控器按确认没反应。而首帧布局未完成时 requestFocus 会抛，
+ * 所以统一等两帧再抢；失败不抛（目标可能还没上树，下一次组合/数据到达会再来一遍）。
+ *
+ * 用法：每个页面的"首焦点落点"建一个 FocusRequester，把 requester 挂到那一项上，
+ * 再调一次本函数——不要在页面里各写一遍 withFrameNanos 重试。
+ */
+@Composable
+fun TvFirstFocus(requester: FocusRequester?, key: Any? = Unit) {
+    if (requester == null) return
+    LaunchedEffect(requester, key) {
+        withFrameNanos { }
+        withFrameNanos { }
+        runCatching { requester.requestFocus() }
+    }
+}
+
+/**
+ * 横向轨道（LazyRow）版的 TV 焦点滚动规则：**按整格跟焦**。
+ *
+ * 与 [TvGridFocusScroll] 同源：连按时脚本要当场把目标格摆好，不能靠动画追；
+ * 左右各留 [comfort]，被聚焦的 chip 不许贴轨道边缘（贴边时它的描边会被轨道视口切掉）。
+ *
+ * @param focusedIndex 当前被聚焦格的下标；-1 表示焦点不在该轨道上
+ */
+@Composable
+fun TvRowFocusScroll(
+    state: LazyListState,
+    focusedIndex: Int,
+    comfort: Dp = 16.dp,
+) {
+    val comfortPx = with(LocalDensity.current) { comfort.toPx() }
+    LaunchedEffect(state, focusedIndex) {
+        if (focusedIndex < 0) return@LaunchedEffect
+        val info = state.layoutInfo
+        val item = info.visibleItemsInfo.firstOrNull { it.index == focusedIndex }
+        if (item == null) {
+            state.scrollToItem(focusedIndex)
+            return@LaunchedEffect
+        }
+        val viewport = info.viewportSize.width.toFloat()
+        val start = item.offset.toFloat()
+        val end = start + item.size
+        val delta = when {
+            start < comfortPx -> start - comfortPx
+            end > viewport - comfortPx -> end - (viewport - comfortPx)
+            else -> 0f
+        }
+        if (delta != 0f) state.scrollBy(delta)
+    }
+}
+
+/**
+ * 规则 3 的早期写法：给容器自己留底部安全边。
+ *
+ * 懒列表（LazyVerticalGrid / LazyColumn）请改用 [gridScrollRoom]——它同时管上下两端，
+ * 写在一个 modifier 里才不会被漏掉一端。这个函数留给非懒滚动容器（如 DetailScreen 的
+ * verticalScroll 外壳）。
  */
 fun Modifier.listBottomSafe(): Modifier =
     this.padding(bottom = ListMetrics.ListBottomSafe)

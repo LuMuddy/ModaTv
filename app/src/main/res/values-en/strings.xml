@@ -101,6 +101,7 @@
     <string name="copyright_paragraph_3">If you are using a pirated, repackaged or modified version (for example, bundled with ads, injected with other code, or with the icon and app name replaced), any problem that arises is unrelated to the author. The author accepts no liability of any kind and provides no technical support or after-sales service.</string>
     <string name="copyright_paragraph_4">The software is provided "as is", without warranty of any kind, express or implied. By using this software you acknowledge that you have read and accept this notice.</string>
     <string name="copyright_ack">I understand</string>
+    <string name="copyright_scroll_hint">↓ More below — press Down to keep reading</string>
 
     <!-- ==================== Player setting steps (data layer holds resource ids only) ==================== -->
     <string name="player_core_exo">ExoPlayer</string>

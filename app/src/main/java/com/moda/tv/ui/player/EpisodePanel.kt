@@ -27,6 +27,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.moda.tv.model.Episode
+import com.moda.tv.ui.components.railScrollRoom
 import com.moda.tv.ui.components.RemoteImage
 import com.moda.tv.ui.theme.TvBody
 import com.moda.tv.ui.theme.TvCaption
@@ -93,8 +94,8 @@ fun EpisodePanel(
         Spacer(Modifier.height(8.dp))
         LazyRow(
             state = listState,
-            modifier = Modifier.height(EpisodeRowHeight),
-            contentPadding = PaddingValues(horizontal = 18.dp),
+            // 18dp 与标题行同源；写在视口之外，左右推到端点再回来才不会少这一截
+            modifier = Modifier.height(EpisodeRowHeight).railScrollRoom(18.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {

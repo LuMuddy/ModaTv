@@ -18,11 +18,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -31,6 +33,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -41,7 +44,7 @@ import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.LocalContentColor
 import com.moda.tv.model.LibraryEntry
 import com.moda.tv.ui.components.ListMetrics
-import com.moda.tv.ui.components.listItemInset
+import com.moda.tv.ui.components.TvGridFocusScroll
 import com.moda.tv.ui.components.ActionButton
 import com.moda.tv.ui.components.EmptyState
 import com.moda.tv.ui.components.RemoteImage
@@ -75,6 +78,10 @@ fun CompletedScreen(
     var firstFocusDone by remember { mutableStateOf(false) }
     // 「清空」不可撤销，遥控器上半点失误就是全删：先弹确认再真正清
     var confirmClear by remember { mutableStateOf(false) }
+    // TV 的按行跟焦：焦点项下标进状态，滚动由 TvGridFocusScroll 按"整行"接管
+    val gridState = rememberLazyGridState()
+    var focusedIndex by remember { mutableIntStateOf(-1) }
+    TvGridFocusScroll(state = gridState, focusedIndex = focusedIndex, columns = 4)
 
     // 首帧布局完成前 requestFocus 会直接抛，等两帧再抢。
     // 空态没有可聚焦元素不成问题：返回键由 AppRoot 全局接，不依赖焦点落在哪个控件上。
@@ -115,11 +122,15 @@ fun CompletedScreen(
         } else {
             LazyVerticalGrid(
                 columns = GridCells.Fixed(4),
-                modifier = Modifier.fillMaxSize(),
-                // 四周都要留空间：卡片聚焦放大 + 描边会被网格边界裁掉，见 HistoryScreen 的同类说明
-                contentPadding = ListMetrics.gridContentPadding(top = 16.dp, side = 20.dp),
+                state = gridState,
+// weight(1f)：Column 里 fillMaxSize 会拿到整列高度（不是剩余），
+                // 网格视口于是比屏幕长出一截，末行贴着屏幕下沿被切、焦点滚动也以为它已可见
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                // 同历史页：顶部余量写进 contentPadding 才不会被焦点滚动吃掉
+                contentPadding = ListMetrics.gridContentPadding(top = 12.dp, side = 20.dp),
                 horizontalArrangement = Arrangement.spacedBy(20.dp),
-                verticalArrangement = Arrangement.spacedBy(22.dp),
+                // 纵向缝隙由每项的 10dp 余量提供，这里不再叠加
+                verticalArrangement = Arrangement.spacedBy(0.dp),
             ) {
                 // 用 itemsIndexed 而不是 items + entries.indexOf(entry)：
                 // LibraryEntry 是 data class，indexOf 走的是 equals 全字段比较，
@@ -132,6 +143,7 @@ fun CompletedScreen(
                     CompletedCard(
                         entry = entry,
                         focusRequester = if (index == 0) firstCardFocus else null,
+                        onFocused = { focusedIndex = index },
                         onResume = { onResume(entry) },
                         onDelete = { onDelete(entry) },
                     )
@@ -163,19 +175,18 @@ fun CompletedScreen(
 private fun CompletedCard(
     entry: LibraryEntry,
     focusRequester: FocusRequester?,
+    onFocused: () -> Unit,
     onResume: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val corner = 12.dp
-    Column(Modifier.fillMaxWidth()) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
         Card(
             onClick = onResume,
             modifier = Modifier
                 .fillMaxWidth()
-                // 聚焦放大 1.08 的溢出必须落在项自己的布局里，
-                // 否则会被 LazyGrid 视口裁掉（白边下沿被切平）。见 ListMetrics.ItemFocusInset
-                .listItemInset()
-                .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier),
+                .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+                .onFocusChanged { if (it.isFocused) onFocused() },
             shape = CardDefaults.shape(shape = RoundedCornerShape(corner)),
             colors = CardDefaults.colors(
                 containerColor = ModaColors.Surface,
@@ -185,7 +196,8 @@ private fun CompletedCard(
                 pressedContainerColor = ModaColors.Accent,
                 pressedContentColor = Color.White,
             ),
-            scale = CardDefaults.scale(scale = 1f, focusedScale = 1.06f, pressedScale = 1f),
+            // 不放大：网格视口会裁掉放大溢出，末行卡片的下沿/上沿会缺一条边
+        scale = CardDefaults.scale(scale = 1f, focusedScale = 1f, pressedScale = 1f),
             border = CardDefaults.border(
                 border = Border.None,
                 focusedBorder = Border(
@@ -288,7 +300,8 @@ private fun DeleteButton(onDelete: () -> Unit, modifier: Modifier = Modifier) {
             pressedContainerColor = ModaColors.SurfaceHigh,
             pressedContentColor = ModaColors.TextDim,
         ),
-        scale = CardDefaults.scale(scale = 1f, focusedScale = 1.06f, pressedScale = 1f),
+        // 不放大：网格视口会裁掉放大溢出，末行卡片的下沿/上沿会缺一条边
+        scale = CardDefaults.scale(scale = 1f, focusedScale = 1f, pressedScale = 1f),
         border = CardDefaults.border(
             border = Border.None,
             focusedBorder = Border(

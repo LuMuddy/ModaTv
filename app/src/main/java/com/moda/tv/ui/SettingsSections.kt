@@ -164,8 +164,23 @@ internal fun rememberPlayerSettingsHolder(
 internal fun SettingsSectionScaffold(
     title: String,
     subtitle: String? = null,
+    /**
+     * 首焦点落点：子页的第一行。
+     *
+     * 不请求的话，从菜单页进子页时原节点已随上一个页面离开组合，焦点是空的——
+     * 屏幕上没有任何白圈，用户只能先随便按一下方向键来"找回光标"。
+     * 请求必须在首帧布局之后（两帧），否则目标还没上树，requestFocus 会抛。
+     */
+    firstFocus: FocusRequester? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    if (firstFocus != null) {
+        LaunchedEffect(firstFocus) {
+            withFrameNanos { }
+            withFrameNanos { }
+            runCatching { firstFocus.requestFocus() }
+        }
+    }
     Column(
         Modifier
             .fillMaxSize()
@@ -193,7 +208,10 @@ internal fun SettingsSectionScaffold(
                 .fillMaxWidth()
                 .weight(1f)
                 .verticalScroll(scrollState)
-                .padding(bottom = 40.dp),
+                // R2 的纵向版：上下各留出呼吸空间，被聚焦行才不会贴住标题或屏幕下沿。
+                // 非 Lazy 的 verticalScroll 由 Compose 负责把焦点行带进视口，
+                // 这里只需保证"带进来之后不被切"。
+                .padding(top = 16.dp, bottom = 40.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
             content = content,
         )
@@ -216,8 +234,12 @@ internal fun PlaybackSettingsSection(holder: PlayerSettingsHolder) {
      */
     val ijkUsable = remember(context) { PlayerEngines.isIjkAvailable() }
     val settings = holder.value
+    val firstFocus = remember { FocusRequester() }
 
-    SettingsSectionScaffold(title = stringResource(SettingsSectionId.Playback.titleRes)) {
+    SettingsSectionScaffold(
+        title = stringResource(SettingsSectionId.Playback.titleRes),
+        firstFocus = firstFocus,
+    ) {
         SectionCard {
             // 内核：按 PlayerCore.entries 生成，而不是手写两行。
             // 枚举以后加档位时这里自动跟上，不用再回来改一遍布局。
@@ -232,6 +254,7 @@ internal fun PlaybackSettingsSection(holder: PlayerSettingsHolder) {
                     null
                 },
                 hint = stringResource(R.string.settings_playback_core_hint),
+                focusRequester = firstFocus,
                 onCycle = {
                     val entries = PlayerCore.entries
                     val i = entries.indexOf(settings.playerCore).coerceAtLeast(0)
@@ -324,6 +347,7 @@ internal fun NetworkSettingsSection(
     val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
     val fieldFocus = remember { FocusRequester() }
+    val firstFocus = remember { FocusRequester() }
     // commit()/onClick 都是普通函数与 lambda，里面不能再调 @Composable 的 stringResource，
     // 所以把这几条反馈文案在这里先取好
     val savedText = stringResource(R.string.settings_network_saved)
@@ -371,6 +395,7 @@ internal fun NetworkSettingsSection(
     SettingsSectionScaffold(
         title = stringResource(SettingsSectionId.Network.titleRes),
         subtitle = stringResource(R.string.settings_network_subtitle),
+        firstFocus = firstFocus,
     ) {
         SectionCard {
             // 代理网址：点这一行直接进编辑框手动输入（电视上用系统输入法）。
@@ -380,6 +405,7 @@ internal fun NetworkSettingsSection(
                 label = stringResource(R.string.settings_network_api_base),
                 value = apiBase,
                 chevron = true,
+                focusRequester = firstFocus,
                 onClick = { startEdit() },
             )
 
@@ -637,6 +663,8 @@ internal fun CyclingRow(
     hint: String? = null,
     /** IJK 选了但本机没有 so 之类的实况告警，用 Danger 色 */
     warning: String? = null,
+    /** 首焦点落点用；空表示这一行不参与首焦点 */
+    focusRequester: FocusRequester? = null,
 ) {
     SettingItem(
         label = label,
@@ -645,6 +673,7 @@ internal fun CyclingRow(
         onClick = onCycle,
         hint = hint,
         warning = warning,
+        focusRequester = focusRequester,
     )
 }
 
@@ -663,9 +692,16 @@ internal fun SettingItem(
     warning: String? = null,
     chevron: Boolean = false,
     onClick: (() -> Unit)? = null,
+    focusRequester: FocusRequester? = null,
 ) {
     Column(Modifier.fillMaxWidth()) {
-        SettingRow(label = label, value = value, chevron = chevron, onClick = onClick)
+        SettingRow(
+            label = label,
+            value = value,
+            chevron = chevron,
+            onClick = onClick,
+            focusRequester = focusRequester,
+        )
         hint?.let { HintText(it) }
         warning?.let {
             Text(
@@ -725,6 +761,8 @@ internal fun SettingRow(
     modifier: Modifier = Modifier,
     /** 非空即可点击：chevron 只负责「看起来能进」，真正让它能按下去的是这个回调 */
     onClick: (() -> Unit)? = null,
+    /** 挂在 Card 自己身上（不是外层 Box）：焦点节点是 Card，挂错了 requestFocus 会静默失败 */
+    focusRequester: FocusRequester? = null,
 ) {
     var focused by remember { mutableStateOf(false) }
 
@@ -804,6 +842,7 @@ internal fun SettingRow(
                 onClick = onClick,
                 modifier = Modifier
                     .fillMaxWidth()
+                    .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
                     .onFocusChanged { focused = it.isFocused },
                 shape = CardDefaults.shape(shape = RoundedCornerShape(10.dp)),
                 colors = CardDefaults.colors(

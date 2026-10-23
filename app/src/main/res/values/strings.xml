@@ -101,6 +101,7 @@
     <string name="copyright_paragraph_3">如果使用的是盗版、被二次打包或被修改过的版本（例如捆绑广告、植入其他代码、替换图标与应用名），出现的一切问题都与作者无关。作者不承担任何责任，也不提供任何形式的技术支持或售后。</string>
     <string name="copyright_paragraph_4">软件按「现状」提供，不作任何明示或暗示的担保。使用本软件即表示你已知悉并接受本声明。</string>
     <string name="copyright_ack">我已知悉</string>
+    <string name="copyright_scroll_hint">↓ 下方还有内容，按「下」继续阅读</string>
 
     <!-- ==================== 播放设置档位（数据层只持有资源 id） ==================== -->
     <string name="player_core_exo">ExoPlayer</string>
