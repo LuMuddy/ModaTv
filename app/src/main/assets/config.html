@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ModaTV 代理网址</title>
+<style>
+  * { box-sizing: border-box }
+
+  body {
+    margin: 0;
+    padding: 24px;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #0b0b0f;
+    color: #f2f3f7;
+  }
+
+  h1 { font-size: 20px; margin: 0 0 6px }
+
+  p.hint { font-size: 14px; line-height: 1.6; color: #9aa0ae; margin: 0 0 18px }
+
+  label { display: block; font-size: 14px; color: #9aa0ae; margin-bottom: 8px }
+
+  input {
+    width: 100%;
+    padding: 14px;
+    font-size: 16px;
+    border-radius: 10px;
+    border: 2px solid #2a2f3a;
+    background: #15161c;
+    color: #f2f3f7;
+    outline: none;
+  }
+
+  input:focus { border-color: #2a5fd6 }
+
+  button {
+    width: 100%;
+    margin-top: 16px;
+    padding: 15px;
+    font-size: 17px;
+    border: 0;
+    border-radius: 10px;
+    background: #2a5fd6;
+    color: #fff;
+    font-weight: 600;
+  }
+
+  button:active { background: #3568de }
+
+  .ok {
+    margin-bottom: 16px;
+    padding: 14px;
+    border-radius: 10px;
+    background: #12351f;
+    color: #7ee2a8;
+    font-size: 15px;
+  }
+
+  .err {
+    margin-bottom: 16px;
+    padding: 14px;
+    border-radius: 10px;
+    background: #3a1616;
+    color: #ff9d9d;
+    font-size: 15px;
+    line-height: 1.5;
+    word-break: break-all;
+  }
+
+  .tip { margin-top: 18px; font-size: 12px; color: #6b7280; line-height: 1.6 }
+</style>
+</head>
+<body>
+<h1>ModaTV 代理网址</h1>
+<p class="hint">在下面填写代理地址的完整 URL，提交后电视端立即生效。</p>
+<!--BANNER_SLOT-->
+<form method="POST" action="/save">
+  <label for="url">代理网址</label>
+  <input id="url" name="url" type="text" inputmode="url" autocomplete="off" spellcheck="false"
+         value="__VALUE__" placeholder="https://proxy.example.com">
+  <button type="submit">提交并验证</button>
+</form>
+<p class="tip">必须以 http:// 或 https:// 开头。提交后会先用该地址做一次探活，不通则不保存。</p>
+<script>
+  // 这个文件同时是「模板」和「可直接预览的页面」：
+  // LanConfigServer 会把 value 换成电视上当前生效的地址，直接打开本文件时它还留着占位符——
+  // 那样看起来像坏了，所以这里把没被替换掉的占位符清空。
+  (function () {
+    var input = document.getElementById('url');
+    if (input && input.value.indexOf('__') === 0) input.value = '';
+  })();
+</script>
+</body>
+</html>

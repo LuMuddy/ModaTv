@@ -53,6 +53,20 @@ fun AppRoot() {
     var showExitDialog by remember { mutableStateOf(false) }
     BackHandler(enabled = true) {
         if (vm.stack.size > 1) {
+            // 从播放页退出必须先补一次进度落盘，再出栈。
+            //
+            // 顺序不能反：pop() 会把 player 重置成 Loading，而 flushHistory() 是从当前
+            // player 快照里取 cid/vid 的——先 pop 再 flush 等于什么都没写。
+            // 此前只有 PlayerScreen 自己的返回按钮走 flush，遥控器返回键走的是这条全局通路，
+            // 于是最后一段进度（5 秒节流窗口之后的那些）根本没落盘，
+            // 首页「继续观看」看到的还是上一次写的旧位置——这就是「每次看完都得手动刷新」的根因。
+            //
+            // 三条退出路径现在都覆盖到了：
+            //  1. 遥控器返回：这里；2. PlayerScreen 内返回按钮：它自己的 onBack 已 flush；
+            //  3. 播完/切集：onEnded、selectEpisodeFromPlayer 在换掉快照之前就 writeHistory 了。
+            // 重复 flush 是安全的：它内部有 updatedAt 与 completedVids 两道闸门，
+            // 同一个位置写第二次只是把 updatedAt 刷新一下，不会产生重复记录。
+            if (vm.current is Dest.Player) vm.flushHistory()
             vm.pop()
         } else {
             showExitDialog = true
@@ -82,8 +96,11 @@ fun AppRoot() {
             is Dest.Home -> HomeRoute(vm)
             is Dest.Search -> SearchRoute(vm)
             is Dest.History -> HistoryRoute(vm)
+            is Dest.Completed -> CompletedRoute(vm)
             is Dest.Favorites -> FavoritesRoute(vm)
             is Dest.Settings -> SettingsRoute(vm, onOpenCopyright = { manualCopyright = true })
+            // 版权声明入口在设置菜单页，不在任何子页里，所以子页路由不需要这个回调
+            is Dest.SettingsGroup -> SettingsGroupRoute(vm, dest.group)
             is Dest.Detail -> DetailRoute(vm, dest)
             is Dest.Player -> PlayerRoute(vm)
         }
@@ -152,11 +169,20 @@ private fun ExitConfirmDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
 
 @Composable
 private fun HomeRoute(vm: TvViewModel) {
+    // 每次回到首页判一次 30 分钟门禁。电视应用常年不关机，冷启动只判一次的话，
+    // 一台开着几天的电视就再也不会自己刷新了。
+    // 必须挂 Unit key：放进重组体里等于每帧判一次门禁，那不是懒加载是自杀。
+    // 这里只会「判」不会「装载」——没缓存时仍旧交给冷启动那一轮，避免两个入口各打一遍网络。
+    LaunchedEffect(Unit) { vm.checkHomeFreshness() }
+    // 继续观看行直接读历史流：它有新记录就立刻出现在首页，
+    // 不需要等下一次首页刷新，也不需要在这里加一个「装载」任务
+    val history by vm.historyEntries.collectAsStateWithLifecycle()
     HomeScreen(
-        rows = vm.homeRows,
         loading = vm.homeLoading,
         error = vm.homeError,
-        onRetry = vm::loadHome,
+        // 错误态重试 = 强制整页刷新：留着旧内容时用户点重试，等的就是真数据，
+        // 而不是又一次被 30 分钟窗口挡回来的缓存
+        onRetry = { vm.refreshAllHome("错误重试") },
         onOpenDetail = { cid, title -> vm.push(Dest.Detail(cid, title)) },
         onOpenSearch = { vm.push(Dest.Search) },
         onOpenPlayer = { cid, vid, title, index ->
@@ -165,7 +191,20 @@ private fun HomeRoute(vm: TvViewModel) {
         onOpenHistory = { vm.push(Dest.History) },
         onOpenFavorites = { vm.push(Dest.Favorites) },
         onOpenSettings = { vm.push(Dest.Settings) },
-        carousel = vm.homeCarousel,
+        // ---- tab 化接线 ----
+        tab = vm.homeTab,
+        feeds = vm.homeFeeds,
+        // 工具栏时间取整页统一的那一个：它与 30 分钟门禁判的是同一个值，
+        // 不随切换 tab 跳动。按 tab 各算各的 fetchedAt 只会有两个结果对不上
+        pageFetchedAt = vm.homeFetchedAt,
+        onSelectTab = vm::selectHomeTab,
+        // 刷新按钮：19 个 tab 整页重拉。与错误态重试走同一条通路，
+        // 区别只在 homeError 的清理时机（refreshHome 会先把它清掉）
+        onRefresh = { vm.refreshHome() },
+        history = history,
+        // 需求 10：点继续观看直接进播放器，不经过详情页
+        onResumeHistory = vm::resumeFromHistory,
+        onOpenCompleted = { vm.push(Dest.Completed) },
     )
 }
 
@@ -178,6 +217,23 @@ private fun HistoryRoute(vm: TvViewModel) {
         onResume = vm::resumeFromHistory,
         onDelete = vm::removeHistory,
         onClear = vm::clearHistory,
+    )
+}
+
+/**
+ * 已看完页：条目流来自 viewModelScope 里的 ViewModel，屏幕本身无状态。
+ *
+ * 删除只删「这一集」而不是整部剧：这一页是按集记录的（一部剧可以看好几集），
+ * 传整个 entry 而不是 cid，屏幕就不必知道这个区别。
+ */
+@Composable
+private fun CompletedRoute(vm: TvViewModel) {
+    val entries by vm.completedEntries.collectAsStateWithLifecycle()
+    CompletedScreen(
+        entries = entries,
+        onResume = vm::resumeCompleted,
+        onDelete = { entry -> vm.removeCompleted(entry.cid, entry.episodeIndex) },
+        onClear = vm::clearCompleted,
     )
 }
 
@@ -213,8 +269,42 @@ private fun SettingsRoute(vm: TvViewModel, onOpenCopyright: () -> Unit) {
         onClearFavorites = vm::clearFavorites,
         onClearSearchHistory = vm::clearSearchHistory,
         onOpenCopyright = onOpenCopyright,
-        onBack = { vm.pop() },
+        onOpenGroup = { group -> vm.push(Dest.SettingsGroup(group)) },
+        // 播放设置改走 VM 的写入口：写操作跑在 viewModelScope 上，
+        // 用户改完立刻按返回也不会把这次写连同组合一起取消掉
+        onUpdatePlayerSettings = vm::updatePlayerSettings,
     )
+}
+
+/**
+ * 设置子页：只按 group 选渲染哪一段，三段共享同一份代理网址与播放设置。
+ *
+ * 每页进入时各自从 store 读一次当前值（见 rememberPlayerSettingsHolder），
+ * 所以播放子页改完返回菜单，摘要拿到的就是刚写进去的新值。
+ * 前提是那次写不能被组合销毁打断——这正是下面把写接到 vm.updatePlayerSettings 的原因。
+ */
+@Composable
+private fun SettingsGroupRoute(
+    vm: TvViewModel,
+    group: SettingsSectionId,
+) {
+    val apiBase by vm.apiBase.collectAsStateWithLifecycle()
+    when (group) {
+        SettingsSectionId.Playback -> PlaybackSettingsSection(
+            holder = rememberPlayerSettingsHolder(vm::updatePlayerSettings),
+        )
+        SettingsSectionId.Network -> NetworkSettingsSection(
+            apiBase = apiBase,
+            onSaveApiBase = { raw -> vm.saveApiBase(raw) },
+            onCommitApiBase = { raw -> vm.commitApiBase(raw) },
+            onResetApiBase = { vm.resetApiBase() },
+            onClearHistory = vm::clearHistory,
+            onClearFavorites = vm::clearFavorites,
+            onClearSearchHistory = vm::clearSearchHistory,
+        )
+        // 关于子页没有可点行：版权声明入口在菜单页上，不需要这个回调
+        SettingsSectionId.About -> AboutSettingsSection()
+    }
 }
 
 @Composable
@@ -243,6 +333,9 @@ private fun DetailRoute(vm: TvViewModel, dest: Dest.Detail) {
     val isFavorite by vm.detailIsFavorite.collectAsStateWithLifecycle()
     // 历史落点：看过这剧就把光标和选中都放到看过的那一集
     val resume by vm.detailResume.collectAsStateWithLifecycle()
+    // 已看完的集号：选集网格右上角的「看完」角标靠它。跟着 detailCid 切流，
+    // 从收藏页点进 A、返回、再点进 B 时会自动换成 B 的完成态，不会把 A 的角标带过去
+    val completedIndexes by vm.detailCompletedIndexes.collectAsStateWithLifecycle()
     DetailScreen(
         detail = vm.detail,
         loading = vm.detailLoading,
@@ -266,6 +359,7 @@ private fun DetailRoute(vm: TvViewModel, dest: Dest.Detail) {
         onRetry = vm::retryDetail,
         isFavorite = isFavorite,
         resume = resume,
+        completedIndexes = completedIndexes,
         onToggleFavorite = {
             val series = vm.detail ?: return@DetailScreen
             vm.toggleFavorite(
