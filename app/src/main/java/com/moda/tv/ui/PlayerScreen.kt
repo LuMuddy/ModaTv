@@ -1,5 +1,7 @@
 package com.moda.tv.ui
 
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
@@ -19,6 +21,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -46,21 +49,16 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.media3.common.MediaItem
-import androidx.media3.common.MimeTypes
-import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
-import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.okhttp.OkHttpDataSource
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
-import com.moda.tv.data.Api
 import com.moda.tv.data.local.AspectMode
 import com.moda.tv.data.local.AspectModes
+import com.moda.tv.data.local.DecoderMode
 import com.moda.tv.data.local.IntroOutro
+import com.moda.tv.data.local.IntroOutroRules
 import com.moda.tv.data.local.IntroOutroStoreImpl
+import com.moda.tv.data.local.PlayerCore
 import com.moda.tv.data.local.PlayerSettings
 import com.moda.tv.data.local.PlayerSettingsStoreImpl
 import com.moda.tv.data.local.PlayerSpeedOptions
@@ -70,6 +68,8 @@ import com.moda.tv.model.Tier
 import com.moda.tv.ui.player.DanmakuItems
 import com.moda.tv.ui.player.DanmakuOverlay
 import com.moda.tv.ui.player.OsdSlot
+import com.moda.tv.ui.player.PlayerEngine
+import com.moda.tv.ui.player.PlayerEngines
 import com.moda.tv.ui.player.PlayerErrorPane
 import com.moda.tv.ui.player.PlayerOsd
 import com.moda.tv.ui.player.adjustDanmaku
@@ -106,7 +106,7 @@ private fun SeekHint(accumMs: Long, modifier: Modifier = Modifier) {
             )
             Spacer(Modifier.width(12.dp))
             Text(
-                text = "$seconds 秒",
+                text = "秒 " + seconds,
                 style = TvBody.copy(fontSize = 30.sp),
                 color = Color.White.copy(alpha = 0.92f),
             )
@@ -166,24 +166,121 @@ private const val TickMs = 300L
 private const val ProgressReportMs = 1000L
 /** 长按多久算「要清除」，短于它按短按处理 */
 private const val MarkLongPressMs = 800L
-/** 判断「已经播过标记点」的容差：刚 seek 到位时位置可能差一点点 */
-private const val MarkReachedToleranceMs = 1000L
 
 /**
- * 复用 Api 的 OkHttpClient 建数据源：电视盒子的默认 HttpURLConnection 在 TLS 与
- * 重定向上的表现差异很大，大文件 Range 请求也没必要开第二套连接池。
+ * 「这一集以前播过」的判定阈值。
+ *
+ * 需求原话是「跳片头的逻辑是从来没有播放过的视频才进行跳」，而播放页能拿到的唯一历史信号
+ * 是 [PlayerScreen] 的 startPositionMs —— 它正是 TvViewModel.resumePosition() 的返回值：
+ * 只有播放记录里存在 **同一个 episodeIndex** 的那一集时才给出 positionMs，否则恒为 0。
+ * 所以 startPositionMs > 0 与「历史里有过这一集」严格等价，不必再读一次 DataStore。
+ *
+ * 再加一道 5 秒下限，是为了把「点进去立刻退出」从「看过」里摘出去：
+ * 那种记录只说明用户点过，不代表他看过片头。
  */
-private fun buildPlayer(context: android.content.Context): ExoPlayer {
-    val okHttpFactory = OkHttpDataSource.Factory(Api.http)
-    val dataSourceFactory = DefaultDataSource.Factory(context, okHttpFactory)
-    return ExoPlayer.Builder(context)
-        .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
-        .build()
+private const val HasPlayedThresholdMs = 5_000L
+
+/**
+ * 拿到 ExoEngine 内部的 ExoPlayer 实例。
+ *
+ * 这是一处**被迫的反射**，不是随手写的取巧：PlayerEngine 接口没有暴露「播放器实例」
+ * 或「渲染视图」，而 ExoEngine 的 attachSurface() 对 Exo 是空体 ——
+ * 画面只有宿主把 PlayerView 绑到一个 ExoPlayer 上才会出。
+ * 在「不许改 PlayerEngine.kt」的约束下，这是让默认内核（Exo）还能出画的唯一接法。
+ *
+ * 之所以安全：
+ *  · release 构建 isMinifyEnabled = false，字段名 player 不会被裁剪；
+ *  · 取不到就返回 null（PlayerView.player = null 只是黑屏，不会崩），并在日志里留一行。
+ * 后续 PlayerEngine 若补上 videoView()/player 访问器，删掉这个函数改一行即可。
+ */
+private fun exoPlayerOf(engine: PlayerEngine): Player? = try {
+    val field = engine.javaClass.getDeclaredField("player")
+    field.isAccessible = true
+    field.get(engine) as? Player
+} catch (t: Throwable) {
+    android.util.Log.w("PlayerScreen", "取 ExoPlayer 实例失败（渲染视图接口缺口）：" + t.message)
+    null
+}
+
+/**
+ * 内核枚举 → PlayerEngine 那一侧的字符串。
+ *
+ * PlayerEngine 刻意用裸 String 表达内核、不引用 data.local 的 PlayerCore，
+ * 理由写在 PlayerEngine.kt 的注释里（两侧独立演进）。映射因此留在这层，
+ * 且只出现一次；别处再拼就是第二份真相。
+ */
+private fun coreKeyOf(core: PlayerCore): String = when (core) {
+    PlayerCore.Ijk -> "ijk"
+    PlayerCore.Exo -> "exo"
+}
+
+/**
+ * 视频渲染面。
+ *
+ * 两个内核的出画方式完全不同，没法共用一个 View：
+ *  · Exo：画面挂在 PlayerView 上，PlayerView 必须绑定到具体的 ExoPlayer 实例；
+ *  · IJK：画面直接渲染到 SurfaceHolder，用裸 SurfaceView + attachSurface(holder)。
+ * 所以这里按内核分两支，而不是硬塞一个折中方案。
+ *
+ * [core] 传的必须是**实际生效**的内核（IJK 不可用时工厂会回退 Exo），
+ * 否则会出现「以为在用 IJK 的 SurfaceView，其实引擎是 Exo」这种必然黑屏。
+ */
+@Composable
+private fun VideoSurface(
+    engine: PlayerEngine,
+    core: PlayerCore,
+    resizeMode: Int,
+    modifier: Modifier = Modifier,
+) {
+    when (core) {
+        // IJK：SurfaceHolder 一创建就把句柄交给引擎。
+        // surfaceDestroyed 里不主动解绑，是因为接口签名是 Any? —— 传 null 会被实现类
+        // 当成「类型不对」直接短路；真正的解绑发生在 release() 内部的 setDisplay(null)。
+        PlayerCore.Ijk -> AndroidView(
+            factory = { ctx ->
+                SurfaceView(ctx).apply {
+                    holder.addCallback(object : SurfaceHolder.Callback {
+                        override fun surfaceCreated(h: SurfaceHolder) {
+                            engine.attachSurface(h)
+                        }
+
+                        override fun surfaceChanged(h: SurfaceHolder, format: Int, w: Int, hh: Int) {
+                            // 尺寸变化后部分盒子会换一个 Surface，重新交一次句柄才不出黑屏
+                            engine.attachSurface(h)
+                        }
+
+                        override fun surfaceDestroyed(h: SurfaceHolder) = Unit
+                    })
+                }
+            },
+            modifier = modifier,
+        )
+
+        // Exo：PlayerView 自己挂 Surface，宿主只需要给它一个 Player
+        PlayerCore.Exo -> AndroidView(
+            factory = { ctx ->
+                PlayerView(ctx).apply {
+                    useController = false
+                    // 控制器关闭后 PlayerView 仍会抢方向键，必须明确退出焦点竞争
+                    isFocusable = false
+                    isFocusableInTouchMode = false
+                    keepScreenOn = true
+                }
+            },
+            // resizeMode 也要在 update 里设：重建引擎、切档位都会走到这里
+            update = {
+                it.player = exoPlayerOf(engine)
+                it.resizeMode = resizeMode
+            },
+            onRelease = { it.player = null },
+            modifier = modifier,
+        )
+    }
 }
 
 /**
  * TV 播放页。
- * 遥控器事件统一由外层 Box 处理：PlayerView 自己会吃掉方向键与确认键，
+ * 遥控器事件统一由外层 Box 处理：渲染视图自己会吃掉方向键与确认键，
  * 所以它被设成不可聚焦、控制器关闭，按键语义全部在这里固定下来。
  */
 @Composable
@@ -210,14 +307,13 @@ fun PlayerScreen(
     onSelectEpisode: (Episode) -> Unit = {},
 ) {
     val context = LocalContext.current
-    // 重试即换 key 重建 ExoPlayer：播放器进入错误态后内部状态不可靠
+    // 重试即换 key 重建引擎：播放器进入错误态后内部状态不可靠
     var attempt by remember { mutableIntStateOf(0) }
     // 默认走 MP4 直链：它严格对应所选档位；hls_url 是服务端固定档的整片流，画质与所选档位无关
     // 只有 MP4 起播失败才切 HLS，且只切一次，避免两路地址之间反复循环
     var fellBackToHls by remember(url, hlsUrl) { mutableStateOf(false) }
     val useHls = fellBackToHls && hlsUrl != null
     val playUrl = if (useHls) hlsUrl!! else url
-    val player = remember(playUrl, attempt) { buildPlayer(context) }
     val focusRequester = remember { FocusRequester() }
 
     var playing by remember { mutableStateOf(false) }
@@ -232,6 +328,9 @@ fun PlayerScreen(
     var errorMessage by remember(url, attempt) { mutableStateOf<String?>(null) }
     // 失败重试要接着上次位置播，而不是回到片头
     var resumeFrom by remember(url) { mutableLongStateOf(startPositionMs) }
+    // 引擎没有 playbackState，播放到结尾这件事只能自己记：
+    // 它只用于「播完后按确认键要回到开头重播」这一个判断
+    var ended by remember { mutableStateOf(false) }
     // 进播放页默认不显示 OSD：用户是来看剧的，不是来看菜单的。
     // 只有按确认键（播放/暂停）或方向键时才唤出。
     var osdVisible by remember { mutableStateOf(false) }
@@ -256,7 +355,13 @@ fun PlayerScreen(
     val introOutroStore = remember(context) { IntroOutroStoreImpl.create(context) }
     var settings by remember { mutableStateOf(PlayerSettings()) }
     LaunchedEffect(settingsStore) {
-        settings = settingsStore.current()
+        val loaded = settingsStore.current()
+        // 起播倍速的取舍：
+        // defaultSpeed 是「每次起播用哪个倍速」的偏好，speed 是「这次会话正在用哪个倍速」。
+        // 两者的唯一真相仍然是 PlayerSettings 里的那两个字段，不另起一份内存态：
+        // 会话一开始把 speed 播种成 defaultSpeed，之后用户在 OSD 里改的只动 speed。
+        // 于是「这一集用 2x 追完」不会污染下次开机的起点，也不会出现两套互相打架的状态。
+        settings = loaded.copy(speed = loaded.defaultSpeed)
     }
 
     var marks by remember(cid) { mutableStateOf(IntroOutro()) }
@@ -269,6 +374,23 @@ fun PlayerScreen(
         marks = if (cid.isBlank()) IntroOutro() else introOutroStore.get(cid)
         marksReady = true
     }
+
+    /**
+     * 「这一集以前播过吗」——本集起播那一刻的 startPositionMs 快照。
+     *
+     * 为什么不直接用 startPositionMs：切清晰度会让 TvViewModel 把它改写成「当前进度」
+     * （见 changeTier 里的 startPositionMs = resumeAt），那时它必然大于 0，
+     * 同一集播到一半就突然变成「播过」，片头再也不会跳。
+     *
+     * 所以 key 必须是「这一集的身份」而不是「这次播放的参数」：
+     *  · cid 换 = 换了一部剧，必然重置；
+     *  · episodeLabel 里带集号（TvViewModel.labelOf 的兜底是「第 N 集」），
+     *    播放页内的换集（selectEpisodeFromPlayer）一定会改它。
+     * 刻意**不把 url 放进 key**：换清晰度会改 url，而那时 startPositionMs 已被改写成
+     * 当前进度，重新取快照会把「没播过」错判成「播过」。
+     */
+    val initialStartMs = remember(cid, episodeLabel) { startPositionMs }
+    val hasPlayedBefore = initialStartMs >= HasPlayedThresholdMs
 
     // 写盘统一走这里：UI 立刻生效，持久化异步跟上，不阻塞按键响应
     val scope = rememberCoroutineScope()
@@ -283,12 +405,34 @@ fun PlayerScreen(
             // 静默：本地标记丢了最多再记一次
         }
     }
-    fun updateSettings(next: PlayerSettings) {
-        val previous = settings
-        settings = next
-        scope.launch { settingsStore.save(next) }
-        // 倍速要实时生效；清晰度切换重建播放器时会重新应用，见下面的 LaunchedEffect(player)
-        if (next.speed != previous.speed) player.setPlaybackSpeed(next.speed)
+
+    /**
+     * IJK 是否真的可用。isIjkAvailable() 首次调用会真的 new 一个 IjkMediaPlayer 去验 so，
+     * 包进 remember 是为了避免每次重组都重复付这笔开销。
+     */
+    val ijkUsable = remember(context) { PlayerEngines.isIjkAvailable() }
+
+    /**
+     * 实际生效的内核。
+     * 用户选了 IJK 但包里没有 so 时工厂会静默回退 Exo，渲染视图也必须跟着回退，
+     * 否则会拿 SurfaceView 去配一个 Exo 引擎——必然黑屏。
+     */
+    val effectiveCore = if (settings.playerCore == PlayerCore.Ijk && ijkUsable) {
+        PlayerCore.Ijk
+    } else {
+        PlayerCore.Exo
+    }
+    val hardware = settings.decoderMode == DecoderMode.Hardware
+
+    /**
+     * 引擎重建的 key：地址、重试次数、内核、软硬解。
+     *
+     * 后两个也进 key，是因为它们只能在构造时决定（Exo 的 MediaCodecSelector 与
+     * IJK 的 mediacodec 选项都是 init 期写死的），换值必须换实例。
+     * 进度不会因此丢：onDispose 里先 flush 一次到 resumeFrom，新实例用它当 startMs。
+     */
+    val engine = remember(playUrl, attempt, effectiveCore, hardware) {
+        PlayerEngines.create(context, coreKeyOf(effectiveCore), hardware)
     }
 
     // 没有集数表时 Episode 槽位不参与导航，焦点不能停在看不见的槽位上
@@ -319,6 +463,14 @@ fun PlayerScreen(
         danmakuPanelVisible = false
         episodePanelVisible = false
         aspectPanelVisible = false
+    }
+
+    fun updateSettings(next: PlayerSettings) {
+        val previous = settings
+        settings = next
+        scope.launch { settingsStore.save(next) }
+        // 倍速要实时生效；换内核/切清晰度/回退 HLS 重建引擎时会重新应用，见 LaunchedEffect(engine)
+        if (next.speed != previous.speed) engine.setSpeed(next.speed)
     }
 
     fun cycleAspect(delta: Int) {
@@ -402,102 +554,163 @@ fun PlayerScreen(
             .coerceAtLeast(0)
     }
 
-    DisposableEffect(player) {
-        val listener = object : Player.Listener {
-            override fun onIsPlayingChanged(isPlaying: Boolean) {
-                playing = isPlaying
+    /**
+     * 回调参数名与 [PlayerEngine.Listener] 保持一致（否则 Kotlin 会报命名不一致的告警），
+     * 但那样就会遮住同名的状态变量，所以经这两个小函数落回状态。
+     */
+    fun setPlayingState(value: Boolean) {
+        playing = value
+    }
+
+    fun setBufferingState(value: Boolean) {
+        buffering = value
+    }
+
+    DisposableEffect(engine) {
+        val listener = object : PlayerEngine.Listener {
+            override fun onPlayingChanged(playing: Boolean) {
+                setPlayingState(playing)
             }
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                durationMs = player.duration.coerceAtLeast(0L)
-                // 缓冲状态要单独跟踪：起播、拖动进度、切清晰度都会进入 BUFFERING，
+
+            override fun onBufferingChanged(buffering: Boolean) {
+                // 缓冲状态要单独跟踪：起播、拖动进度、切清晰度都会进入缓冲，
                 // 没有这个状态用户只看到一片黑，不知道是在加载还是卡死了
-                buffering = playbackState == Player.STATE_BUFFERING
-                if (playbackState == Player.STATE_ENDED) onEnded()
+                setBufferingState(buffering)
             }
-            override fun onPlayerError(error: PlaybackException) {
+
+            override fun onEnded() {
+                ended = true
+                onEnded()
+            }
+
+            override fun onError(message: String) {
                 // 直链先挂且有 HLS 兜底时静默切换：保住能看，比先弹报错体验好
                 if (!useHls && hlsUrl != null) {
-                    val last = player.currentPosition.coerceAtLeast(0L)
+                    val last = engine.positionMs
                     if (last > 0L) resumeFrom = last
                     fellBackToHls = true
                     errorMessage = null
                 } else {
-                    errorMessage = error.message ?: error.errorCodeName
+                    errorMessage = message
                 }
                 osdVisible = true
             }
+
+            override fun onVideoSizeChanged(width: Int, height: Int) {
+                // 画面比例目前由 resizeMode / 盒子自己处理，这里不需要额外动作。
+                // 回调保留是为了将来做「按实际画幅自动切比例」。
+            }
         }
-        player.addListener(listener)
+        engine.listener = listener
         onDispose {
-            // 退出前补一次进度，外部据此写播放记录；播放器已出错时位置可能是 0，别覆盖断点
-            val last = player.currentPosition.coerceAtLeast(0L)
+            // 退出/换内核前补一次进度，外部据此写播放记录。
+            // 引擎已出错时位置可能是 0，别覆盖断点
+            val last = engine.positionMs
+            val dur = engine.durationMs
             if (last > 0L) resumeFrom = last
-            onProgress(resumeFrom, player.duration.coerceAtLeast(0L))
-            player.removeListener(listener)
-            player.release()
+            onProgress(resumeFrom, dur)
+            // 先摘 listener 再 release：release 期间可能同步回调，那时本页可能已在销毁
+            engine.listener = null
+            engine.release()
         }
     }
 
-    LaunchedEffect(player, playUrl) {
-        val item = if (useHls) {
-            MediaItem.Builder()
-                .setUri(hlsUrl)
-                .setMimeType(MimeTypes.APPLICATION_M3U8)
-                .build()
-        } else {
-            MediaItem.fromUri(url)
-        }
-        player.setMediaItem(item)
-        if (resumeFrom > 0) player.seekTo(resumeFrom)
-        player.prepare()
-        player.playWhenReady = true
+    LaunchedEffect(engine, playUrl) {
+        ended = false
+        engine.start(playUrl, hls = useHls, startMs = resumeFrom, speed = settings.speed)
     }
 
-    // 换清晰度 / 回退 HLS / 重试都会重建 ExoPlayer，新实例必须重新套上当前倍速；
-    // 同一个 Effect 也负责首次起播时把持久化的倍速应用上去
-    LaunchedEffect(player, settings.speed) {
-        player.setPlaybackSpeed(settings.speed)
+    // 换内核 / 软硬解 / 切清晰度 / 回退 HLS / 重试都会重建引擎，
+    // 新实例必须重新套上当前会话倍速；同一个 Effect 也负责首次起播时应用播种后的 defaultSpeed
+    LaunchedEffect(engine, settings.speed) {
+        engine.setSpeed(settings.speed)
     }
-
     /**
-     * 自动跳读的是「实时标记」，并且以标记值本身作为 effect 的 key：
-     * 用户刚记录的片头/片尾要立刻生效，否则记录完什么都不发生。
-     * key 变化会重开一轮循环，introApplied/outroFired 随之复位，
+     * 自动跳片头/片尾的判定循环。
+     *
+     * 它同时承担进度上报，所以任何分支都**不能 return**——一旦退出，
+     * 整页就再也写不进断点了。
+     *
+     * 以 [liveMarks] 与两个标记值作为 key：用户刚记录的片头/片尾要立刻生效，
+     * 否则记录完什么都不发生。key 变化会重开一轮，闸门随之复位，
      * 于是「记录完立刻用上」，而普通播放过程中又不会被反复触发。
      */
     val liveMarks = if (marksReady) marks else IntroOutro()
-    LaunchedEffect(player, liveMarks.introMs, liveMarks.outroMs) {
+    LaunchedEffect(engine, liveMarks.introMs, liveMarks.outroMs) {
         var sinceReport = 0L
         // 片头只自动跳一次：跳完再判会跟用户的回看拉扯，用户往回拖一点就被拽回去
-        var introApplied = false
+        var introDone = false
         // 片尾同理，只触发一次，避免 onEnded 之前本帧内反复调用
         var outroFired = false
+        // 本集是否已经上报过完成。幂等的**权威闸门在 TvViewModel.completedVids**，
+        // 这里只是前置闸：上报过一次就不再重复上报，省掉每秒一次的无效调用。
+        var completedReported = false
         while (true) {
-            positionMs = player.currentPosition.coerceAtLeast(0L)
-            durationMs = player.duration.coerceAtLeast(0L)
-            bufferedMs = player.bufferedPosition.coerceAtLeast(0L)
+            positionMs = engine.positionMs
+            durationMs = engine.durationMs
+            bufferedMs = engine.bufferedMs
 
-            // 片头：起播后只要还没走到记录点，就自动跳到记录点。
-            // 断点续播在同一集的中间时，now 已经大于标记，这里自然不触发
-            val intro = liveMarks.introMs
-            if (intro > 0L && !introApplied) {
-                introApplied = true
-                if (positionMs + MarkReachedToleranceMs < intro) {
-                    player.seekTo(intro)
-                    positionMs = intro
+            // 片头/片尾的比例计算必须等到片长就绪。
+            // duration 一开始是 0，此时算 8%/6% 只会得到 0；更糟的是把这次计算记成
+            // 「已经判定过」，片长真正到了也不会再跳一次。所以整段都放在这个 if 里。
+            if (durationMs > 0L) {
+                // 片头先算，因为它还要给片尾当参照（片尾不能压在片头 MIN_GAP_MS 以内）。
+                // 每轮重算而不是缓存：片长可能在起播后继续被修正（HLS 估算时长误差），
+                // 缓存下来的旧比例会让片尾点落在错的位置。两个函数都是纯函数，开销可忽略。
+                val effectiveIntro = IntroOutroRules.effectiveIntro(
+                    liveMarks.introMs,
+                    durationMs,
+                )
+
+                if (!introDone && settings.skipIntroEnabled) {
+                    introDone = true
+                    // 「从未播过」的判据见 HasPlayedThresholdMs / hasPlayedBefore 的注释
+                    if (IntroOutroRules.shouldSkipIntro(
+                            hasPlayedBefore = hasPlayedBefore,
+                            positionMs = positionMs,
+                            effectiveIntroMs = effectiveIntro,
+                        )
+                    ) {
+                        engine.seekTo(effectiveIntro)
+                        positionMs = effectiveIntro
+                    }
                 }
-            }
 
-            // 片尾：播到记录点就算本集看完，交给外部连播下一集。
-            // 不能 return：这个循环同时负责进度上报，退出后整页就再也写不进断点了
-            val outro = liveMarks.outroMs
-            if (outro > 0L && !outroFired &&
-                positionMs >= outro - MarkReachedToleranceMs
-            ) {
-                outroFired = true
-                // 不暂停：暂停会让 currentPosition 钉在片尾点上，新循环重新判断时又命中一次。
-                // 交给外部切集，旧播放器随 key 变化被 release
-                onEnded()
+                // 片尾：到点就算这一集看完，交给外部连播下一集。
+                // 受 skipOutroEnabled 控制的是「跳」，不是「算看完」——
+                // 播到 95% 就该算看完，和用户想不想跳片尾无关。
+                val outro = IntroOutroRules.effectiveOutroWithIntro(
+                    recordedMs = liveMarks.outroMs,
+                    durationMs = durationMs,
+                    introMs = effectiveIntro,
+                )
+                if (settings.skipOutroEnabled && outro > 0L && !outroFired &&
+                    positionMs >= outro - IntroOutroRules.INTRO_SKIP_TOLERANCE_MS
+                ) {
+                    outroFired = true
+                    // 不暂停：暂停会让 currentPosition 钉在片尾点上，新循环重新判断时又命中一次。
+                    // 交给外部切集，旧引擎随 key 变化被 release。
+                    //
+                    // 完成结算：播放页没有 markCompleted 的通道（那是 TvViewModel 的方法），
+                    // 唯一入口是 onProgress —— 这里显式上报一次「位置 = 片长」，
+                    // 让 VM 内部的 isCompleted 判定成立，从而走它那条唯一的 markCompleted 路径。
+                    // 这样 95% 与跳片尾两条来源共用同一个落点，去重仍只由 VM 负责。
+                    if (!completedReported) {
+                        completedReported = true
+                        onProgress(durationMs, durationMs)
+                    }
+                    onEnded()
+                    // 这里**不能 return**：这个循环同时负责每秒一次进度上报，
+                    // 退出后整页就再也写不进断点了（原实现的注释同样强调这一点）。
+                    // outroFired 已置位，后续循环不会再命中片尾分支。
+                }
+
+                // 走满 95% 也结算一次，与上面是两条独立的路；
+                // completedReported 保证同一集不会两条路各报一次
+                if (!completedReported && IntroOutroRules.isCompleted(positionMs, durationMs)) {
+                    completedReported = true
+                    onProgress(positionMs, durationMs)
+                }
             }
 
             sinceReport += TickMs
@@ -544,10 +757,10 @@ fun PlayerScreen(
     // 快进/快退时不要弹整块 OSD：用户只是想跳一段，不需要看到所有菜单。
     // 改为一个居中飘出的箭头 + 累计秒数，松手后自然消失，画面保持干净。
     fun seekBy(deltaMs: Long) {
-        val target = (player.currentPosition + deltaMs)
+        val target = (engine.positionMs + deltaMs)
             .coerceAtLeast(0L)
             .let { if (durationMs > 0) it.coerceAtMost(durationMs) else it }
-        player.seekTo(target)
+        engine.seekTo(target)
         positionMs = target
         seekAccumMs += deltaMs
         seekHintTick++
@@ -569,7 +782,7 @@ fun PlayerScreen(
      * 重新按一次就是重新量一遍：把记录改成现在的位置。
      */
     fun recordMark(isIntro: Boolean) {
-        val now = player.currentPosition.coerceAtLeast(0L)
+        val now = engine.positionMs
         // 0 秒没有意义：既不能当标记跳，写进去也只是个空记录
         if (now <= 0L) return
         marks = if (isIntro) marks.copy(introMs = now) else marks.copy(outroMs = now)
@@ -605,9 +818,15 @@ fun PlayerScreen(
 
     fun togglePlay() {
         if (errorMessage != null) return
-        if (player.isPlaying) player.pause() else {
-            if (player.playbackState == Player.STATE_ENDED) player.seekTo(0)
-            player.play()
+        if (engine.isPlaying) {
+            engine.pause()
+        } else {
+            // 播到结尾后确认键是「重播这一集」，得先把游标拨回开头
+            if (ended) {
+                engine.seekTo(0L)
+                ended = false
+            }
+            engine.play()
         }
     }
 
@@ -769,11 +988,11 @@ fun PlayerScreen(
         )
 
         // 画面比例：
-        // Fit/Fill/Zoom 直接交给 PlayerView.resizeMode（它内部就是 AspectRatioFrameLayout）；
-        // 16:9 / 4:3 是 PlayerView 不支持的档位，做法是给 PlayerView 套一个锁定宽高比的盒子，
-        // 盒内仍用 RESIZE_MODE_FILL —— 盒子决定画幅，FILL 让它铺满盒子，
+        // Fit/Fill/Zoom 交给 Exo 的 resizeMode（IJK 没有这个概念，Surface 自己铺满）；
+        // 16:9 / 4:3 是两边都不支持的档位，做法是给渲染视图套一个锁定宽高比的盒子，
+        // 盒内仍用 FILL —— 盒子决定画幅，FILL 让它铺满盒子，
         // 于是宽银幕内容会被压成 4:3、4:3 老片会被拉成 16:9，正好是本档要的效果，
-        // 并且不用碰 Surface 尺寸或 TextureView 变换，切档时不会重建播放器。
+        // 并且不用碰 Surface 尺寸或 TextureView 变换，切档时不会重建引擎。
         val fixedRatio: Float? = when (settings.aspectMode) {
             AspectMode.Ratio16x9 -> 16f / 9f
             AspectMode.Ratio4x3 -> 4f / 3f
@@ -786,30 +1005,22 @@ fun PlayerScreen(
             AspectMode.Ratio16x9, AspectMode.Ratio4x3 -> AspectRatioFrameLayout.RESIZE_MODE_FILL
         }
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            AndroidView(
-                factory = { ctx ->
-                    PlayerView(ctx).apply {
-                        useController = false
-                        // 控制器关闭后 PlayerView 仍会抢方向键，必须明确退出焦点竞争
-                        isFocusable = false
-                        isFocusableInTouchMode = false
-                        keepScreenOn = true
-                    }
-                },
-                // resizeMode 也要在 update 里设：重建播放器、切档位都会走到这里
-                update = {
-                    it.player = player
-                    it.resizeMode = resizeMode
-                },
-                onRelease = { it.player = null },
-                modifier = if (fixedRatio != null) {
-                    Modifier
-                        .fillMaxSize()
-                        .aspectRatio(fixedRatio)
-                } else {
-                    Modifier.fillMaxSize()
-                },
-            )
+            // AndroidView 的 factory 只在节点首次进入组合时跑一次，换内核就换了 View 类型，
+            // 不换节点会留下上一个内核的 View。key(engine) 强制重建整棵渲染子树。
+            key(engine) {
+                VideoSurface(
+                    engine = engine,
+                    core = effectiveCore,
+                    resizeMode = resizeMode,
+                    modifier = if (fixedRatio != null) {
+                        Modifier
+                            .fillMaxSize()
+                            .aspectRatio(fixedRatio)
+                    } else {
+                        Modifier.fillMaxSize()
+                    },
+                )
+            }
         }
 
         // 弹幕关闭时 enabled=false，DanmakuOverlay 内部直接返回：
@@ -858,7 +1069,7 @@ fun PlayerScreen(
 
         // 缓冲动画：不挂在 OSD 上，OSD 收起时也要能看见。
         // 何时显示：正在缓冲，或第一帧还没出来（durationMs 仍为 0）。
-        // 何时隐藏：已在播放且数据足够（onIsPlayingChanged 会清 buffering）。
+        // 何时隐藏：已在播放且数据足够（onPlayingChanged 回调会清 buffering）。
         // 快进/快退提示：居中飘出一个箭头 + 累计秒数，1.2 秒后自动消失。
         // 这是一个「瞬时反馈」，不能做成常驻面板——用户按左右键只是想跳一段。
         if (seekHintTick > 0) {
