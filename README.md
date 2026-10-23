@@ -1,51 +1,92 @@
 # ModaTv
 
 一个为 Android TV / 电视盒子编写的腾讯视频聚合客户端：Kotlin + Jetpack Compose for TV，
-遥控器全键位可操作，D-Pad 驱动的自绘播放器 OSD，支持清晰度切换、选集、倍速、弹幕与画面比例。
+遥控器全键位可操作，D-Pad 驱动的自绘播放器 OSD，支持清晰度切换、选集、倍速、弹幕、
+画面比例与片头片尾自动跳过。
 
 > 本项目是一个**非官方的第三方前端**，数据来自用户自行配置的后端代理接口与 v.qq.com 的公开页面。
 > 仅用于学习与个人使用，请自行确认内容版权与所在地区法律法规。
 
 ---
 
+## 界面
+
+| 首页（19 个分类 tab） | 详情（续播 + 分集网格） |
+| --- | --- |
+| ![首页](docs/screenshots/home.webp) | ![详情](docs/screenshots/detail.webp) |
+
+| 播放器 OSD（七个槽位） | 设置（三个分组 + 版权声明） |
+| --- | --- |
+| ![播放器](docs/screenshots/player.webp) | ![设置](docs/screenshots/settings.webp) |
+
+| 收藏（追剧语义，点条目进详情） |
+| --- |
+| ![收藏](docs/screenshots/favorites.webp) |
+
+截图取自 1920×1080 的 Android TV 模拟器。
+
+---
+
 ## 功能
 
 **首页**
-- 顶部轮播：抓取 v.qq.com 首页的 `/x/cover/<cid>` 推荐位，再回后端补全竖版/横版海报
-- 四行频道：电视剧 / 电影 / 综艺 / 动漫，直接解析 v.qq.com 官方频道页
-- 逐行降级：某个频道页抓不到时，仅该行回退到关键词搜索；全部失败才整体回退
-- 缓存：频道行与轮播分层缓存，任何异常都沿用过期的旧数据而不是让首页变空
+- 19 个 tab：推荐 + 电视剧 / 电影 / 综艺 / 动漫 / 少儿 / 纪录片 / 精选 / 音乐 / 体育 /
+  NBA / 游戏 / 汽车 / 时尚 / 生活 / 艺术 / 萌宠 / 播客 / 免费，顺序与 v.qq.com 导航栏一致
+- 推荐 tab：抓 v.qq.com 首页的 `/x/cover/<cid>` 推荐位，再回后端补全竖版/横版海报；
+  其余 tab 直接解析 v.qq.com 官方频道页
+- 继续观看：推荐 tab 末尾接一段「继续观看」（最多 5 条，同列宽网格；没有记录整段不出现），
+  点卡片**直接进播放页**，不经过详情
+- 数据源唯一：首页内容**只**来自 v.qq.com，没有搜索兜底。某个频道页抓不到就是这一屏为空，
+  由持久化缓存顶上，而不是拿搜索结果冒充首页
+- 缓存分层：每 tab 的快照落盘（`moda_home_cache`），任何异常都沿用过期的旧数据而不是让首页变空；
+  整页刷新带 30 分钟门禁，工具栏右上角显示「上次成功刷新的时刻」
+- 网格每行 5 张；一个 tab 一屏，不做分页（频道页没有可解析的分页结构）
 
 **搜索**
 - 腾讯热词接口（pbaccess）拉取热门词，10 分钟成功缓存 / 60 秒空结果缓存
 - 本地搜索历史（DataStore 持久化）
 
 **详情**
-- 剧集元信息、全部集数（正片在前，预告片单独标记）
+- 剧集元信息、全部分集（正片在前，预告片单独角标）、每集自带的分集描述
+- 主按钮按历史显示「继续播放 mm:ss」或「播放」；已看完的那一集不再显示断点
+- 分集网格每行 5 格，已看完的集右上角挂「看完」角标
 - 收藏 / 取消收藏（追剧语义，独立于播放历史）
 
 **播放器**
-- Media3 ExoPlayer，HLS（整片 m3u8）优先，失败回退 MP4 直链
+- 内核可切换：Media3 ExoPlayer（默认，HLS 整片 m3u8 优先、失败回退 MP4 直链）
+  与 IJK（ffmpeg 软解，用于 Exo 解不动的老片）；解码可选硬解 / 软解
 - 自绘 OSD，遥控器焦点由单一索引维护，不与 `PlayerView` 抢方向键：
-  `清晰度 / 选集 / 倍速 / 弹幕 / 画面比例` 五个槽位，上下切换槽位、确认展开面板
+  `清晰度 / 选集 / 倍速 / 弹幕 / 画面比例 / 片头 / 片尾` 七个槽位，
+  上下切换槽位、确认展开面板
 - 播放 / 暂停：确认键；快进快退：左右键（OSD 功能栏展开时仍可快进）
 - 按键按「最上层接管」分层：浮窗展开后它就是最上层，按键先归它，不穿透到底下的进度条
 - 浮窗按导航轴分派左右键：横向浮窗（倍速 / 画面比例 / 选集）左右键换值换集；
   纵向浮窗（清晰度 / 弹幕）左右键在本层无语义，静默不响应
 - 横向浮窗里上下键表示「离开这一行」：先收起浮窗回控制条，再换槽位
 - 返回键分层退出：先关面板 → 再关 OSD → 再离开播放页
+- 片头 / 片尾：槽位短按记录当前位置、长按清除；自动跳过按阈值兜底，见下文
 - 弹幕：Canvas 自绘轨道，滚动 + 顶部/底部固定三种模式，字号四档，六种显示区域，上下边距可分步微调
 - 画面比例：原始比例 / 拉伸 / 铺满 / 16:9 / 4:3
 - 档位容错：取不到 vkey 的档位进入 10 分钟黑名单自动隐藏，过期后自动恢复
 
-**历史 / 收藏**
+**片头片尾与完成判定**
+- 完成线：播放进度 ≥ 片长 95%，或触发跳片尾。结算只有 `TvViewModel.markCompleted` 一个入口，
+  幂等；完成后该集从历史移出、写入「已看完」
+- 兜底只对 ≥ 5 分钟的正片生效：片头 = `min(片长 × 8%%, 90s)`，片尾 = 片长 × 6%
+- 记录点若落在片长 1% 以内视为误触，弃用并回退兜底；
+  有效片尾必须 > 有效片头 + 60s 且 < 片长 95%，否则「宁可不跳」
+- 全部是 `IntroOutroRules` 里的纯函数，不碰 Context / DataStore，可在 JVM 直接验证边界
+
+**历史 / 收藏 / 已看完**
 - 播放历史最多 60 条，按 `updatedAt` 倒序，点条目直接续播
 - 收藏不设上限，点条目进详情
+- 已看完：独立页面，按 `(cid, 集号)` 记录，卡片挂「看完」角标，点卡片从头重播；删除只删这一集
+  （历史那边删的是整部剧）。清除播放记录**不**联动清已完成，两者是不同语义的数据
 
 **设置**
-- 应用名称 / 版本号 / 构建号 / Android 版本 / 分辨率
-- 代理网址：遥控器直接输入，或**手机扫码在同局域网内配置**（免去电视上打长 URL）
-- 数据清理：播放记录 / 收藏 / 搜索历史
+- 菜单 + 三个子页：播放设置（内核 / 解码 / 默认倍速 / 自动跳片头片尾）、
+  网络与数据（代理网址、扫码配置、恢复默认、数据清理）、关于（版本 / 构建号 / Android 版本 / 分辨率）
+- 版权声明：顶层常驻入口；每次版本升级后自动弹一次（判定按 `versionCode`，不用布尔开关）
 
 ---
 
@@ -61,6 +102,7 @@
 | Compose BOM | 2025.12.01 |
 | media3 (ExoPlayer / HLS / UI / OkHttp) | 1.4.1 |
 | androidx.tv:tv-material | 1.0.0 |
+| IJK 内核 | xyz.doikki.android.dkplayer:player-ijk 3.3.7（native 按 ABI 裁剪到 arm64-v8a / armeabi-v7a） |
 | OkHttp | 4.12.0 |
 | DataStore Preferences | 1.1.7 |
 | ZXing core | 3.5.3（仅生成二维码矩阵，不引 android-embedded） |
@@ -110,30 +152,38 @@ minSdk 23 覆盖大多数电视盒子；Android TV / Google TV 模拟器可直�
 ## 项目结构
 
 ```
+AGENTS.md                         编码与协作的强制约定（分层、按键、兜底、存储、提交）
+CONTRIBUTING.md                   提交信息规范（Conventional Commits + 钩子校验）
+
+app/src/main/assets/config.html   手机端扫码配置页（LanConfigServer 读取后填充占位符）
+
 app/src/main/java/com/moda/tv/
 ├── ModaApp.kt              Application：启动前同步注入持久化的代理网址
 ├── MainActivity.kt         单 Activity，全屏沉浸 + Compose 入口
-├── model/                  纯数据：VideoItem / Episode / Tier / LibraryEntry / HomeRow ...
+├── model/                  纯数据：VideoItem / Episode / Tier / LibraryEntry / HomeTab / HomeFeed
 ├── data/
-│   ├── Api.kt              后端 HTTP 契约（6 个 action + 统一错误）
-│   ├── Repo.kt             业务门面：首页行、详情、播放计划、弹幕、热词
+│   ├── Api.kt              后端 HTTP 调用与统一错误
+│   ├── Repo.kt             业务门面：首页推荐/分类流、详情、播放计划、弹幕、热词、档位黑名单
 │   ├── Parser.kt           接口 JSON → 模型的解析
-│   ├── CarouselSource.kt   v.qq.com 首页 → 轮播 cid
-│   ├── ChannelSource.kt    v.qq.com 频道页 → 四行内容
-│   ├── LanConfigServer.kt  局域网扫码配置的临时 HTTP 服务
-│   └── local/              DataStore 存储 + 代理网址合法性校验
+│   ├── CarouselSource.kt   v.qq.com 首页推荐位 → cid 列表
+│   ├── ChannelSource.kt    v.qq.com 频道页 → 19 个分类的内容
+│   ├── FileName.kt         下载文件名清洗
+│   ├── LanConfigServer.kt  局域网扫码配置的临时 HTTP 服务 + 二维码生成
+│   └── local/              DataStore 存储 + 代理网址校验 + 片头片尾纯规则
 └── ui/
-    ├── AppRoot.kt          路由栈渲染 + 退出确认
-    ├── Destinations.kt     手写路由（不引 navigation-compose）
-    ├── TvViewModel.kt      页面栈 + 各屏数据装载 + 播放器装配状态
-    ├── *Screen.kt          Home / Search / Detail / Player / History / Favorites / Settings
+    ├── AppRoot.kt          路由栈渲染 + 退出确认 + 版权声明弹窗
+    ├── Destinations.kt     手写路由（不引 navigation-compose）+ 设置分组枚举
+    ├── TvViewModel.kt      页面栈 + 各屏数据装载 + 播放器装配 + 完成结算
+    ├── HomeScreen.kt       工具栏 + 19 个 tab + 网格 + 继续观看行
+    ├── DetailScreen.kt     详情页头 + 5 列选集网格 + 看完角标
+    ├── *Screen.kt          Search / Player / History / Favorites / Completed / Settings
+    ├── SettingsSections.kt 设置三个子页的内容
     ├── components/         卡片、通用状态、最小 OkHttp 图片加载器（不引 Coil）
-    ├── player/             OSD、选集、倍速、弹幕面板、Canvas 弹幕层
+    ├── player/             OSD、选集、倍速、弹幕面板、Canvas 弹幕层、内核抽象
     └── theme/              颜色与字阶
 ```
 
-分层原则：UI 只调 `Repo`（数据侧唯一门面），不直接碰 `Api`；所有网络与 IO 异常在
-ViewModel 内落成状态，屏幕层拿不到 throw，因此不会白屏或崩溃。
+分层与编码约定见 [AGENTS.md](AGENTS.md)：UI 只调 `Repo`，异常在 ViewModel 内落成状态。
 
 ---
 
@@ -145,9 +195,13 @@ ViewModel 内落成状态，屏幕层拿不到 throw，因此不会白屏或崩�
 | --- | --- |
 | `moda_history` | 播放历史（最多 60 条） |
 | `moda_favorites` | 收藏（不设上限） |
+| `moda_completed` | 已看完（按 `cid + 集号` 记录，不设上限） |
 | `moda_search_history` | 搜索历史 |
+| `moda_home_cache` | 首页每 tab 的快照 + 上次整页刷新时刻 |
+| `moda_intro_outro` | 每部剧的片头 / 片尾记录点 |
+| `moda_player_settings` | 内核、解码、倍速、弹幕开关/字号/区域/边距、画面比例、跳片头片尾开关 |
 | `moda_api_settings` | 代理网址（键缺失 = 用出厂默认，因此「恢复默认」只是删键） |
-| `moda_player_settings` | 倍速、弹幕开关/字号/区域/边距、画面比例 |
+| `moda_copyright_notice` | 已确认版权声明的 `versionCode` |
 
 ---
 
@@ -156,34 +210,39 @@ ViewModel 内落成状态，屏幕层拿不到 throw，因此不会白屏或崩�
 电视上敲 URL 是反人类的，所以设置页提供一次性的手机端配置入口：
 
 1. 打开「扫码配置代理网址」，弹出二维码；
-2. 服务只在弹窗打开期间监听（从 8088 起尝试 20 个端口），关闭立即归还端口；
-3. 手机浏览器打开二维码中的地址，输入新地址并提交；
-4. 所有路由校验一次性 token，缺失或不匹配一律 403；
+2. 服务只在弹窗打开期间监听（默认 9999，被占用时顺延最多 20 个端口），关闭立即归还端口；
+3. 手机浏览器打开二维码中的地址（或直接输入 `http://<电视IP>:9999`），输入新地址并提交；
+4. 不做 token 校验——端口只在弹窗打开时监听，能连上就能改；
 5. 校验、探活、落盘都由应用侧负责，服务本身只处理协议。
 
 没有前台服务、没有常驻单例、没有延时回收——对象被丢弃即彻底消失。
 
----
+手机端页面本身是 `app/src/main/assets/config.html`，**可以直接用浏览器双击打开预览样式**：
+模板里的占位符要么写在 HTML 注释里、要么被一小段脚本清掉，直接打开不会看到 `__VALUE__` 这类字面量。
 
-## 开发约定
+它只有两个占位符，`LanConfigServer.pageHtml` 负责替换：
 
-- **遥控器优先**：新增交互先在 D-Pad 上想清楚四个方向 + 确认 + 返回的语义，
-  避免与 `PlayerView` 等原生控件并存两套焦点。
-- **播放不因附属功能崩溃**：弹幕、封面、热词、轮播的失败一律静默降级（空列表 / 占位图），
-  绝不阻断起播或首页。
-- **接口失败要有兜底**：频道行 → 搜索词回退 + 过期缓存兜底；档位 → TTL 黑名单。
-- **不加不必要的依赖**：图片加载用 OkHttp 手搓、路由用字符串手写、二维码只用 ZXing core。
+| 占位符 | 替换成 |
+| --- | --- |
+| `<!--BANNER_SLOT-->` | 成功/失败提示条，无提示时为空串 |
+| `__VALUE__` | 当前生效地址（已做 HTML 转义） |
+
+表单的 `action` 固定为 `/save`，不再需要拼接。改文案或样式只动这个 HTML 文件；
+两个占位符必须保留（提示条那块留空就等于没有提示）。资源读取失败时退回内置兜底页，不会白屏。
 
 ---
 
 ## 已知限制
 
-- 依赖第三方后端与 v.qq.com 的页面结构，腾讯侧改版会导致轮播或频道行降级到搜索方案。
+- 依赖第三方后端与 v.qq.com 的页面结构，腾讯侧改版会导致某个分类 tab 为空
+  （没有搜索兜底可退，这是有意的取舍：宁可空，也不拿别处的数据冒充首页）。
 - 设备 token 有有效期，过期后所有业务接口都会返回 `ok=false`。
+- IJK 只打包了 `arm64-v8a` / `armeabi-v7a`，x86 模拟器上不具备 IJK 内核（ExoPlayer 不受影响）。
 - 未配置单元测试与持续集成，验证方式为真机/模拟器手动走查。
 
 ## 贡献
 
+写代码前请先读 [AGENTS.md](AGENTS.md)（分层、遥控器纪律、降级兜底、存储约定）；
 提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。提交信息遵循 Conventional Commits：
 `<type>(<scope>): <中文描述>`，例如 `fix(player): 修复倍速切换后画面卡顿`。
 
