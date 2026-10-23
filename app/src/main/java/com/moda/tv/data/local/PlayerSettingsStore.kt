@@ -71,6 +71,25 @@ const val MarginMaxPercent = 70f
 const val MarginCombinedMaxPercent = 70f
 
 /**
+ * 播放内核。Exo 是默认、也是唯一已在用的实现；IJK 由后续任务接入，
+ * 这里先把「用户选了哪个」持久化下来——开关早于实现上线，总比实现上线时
+ * 再回头改存储格式、做一次数据迁移省事。
+ */
+enum class PlayerCore(val label: String) {
+    Exo("ExoPlayer"),
+    Ijk("IJK"),
+}
+
+/**
+ * 解码方式。硬解省电、4K 更流畅；软解兼容性更好（老电视 / 编码特殊的老片）。
+ * 具体怎么把这两个值交给播放器由播放侧决定，存储层只负责原样保存与回读。
+ */
+enum class DecoderMode(val label: String) {
+    Hardware("硬解"),
+    Software("软解"),
+}
+
+/**
  * 播放器设置。倍速、弹幕开关、字号、位置全部可自定义并持久化，
  * 下次进播放页沿用上次的值。
  */
@@ -82,6 +101,16 @@ data class PlayerSettings(
     val danmakuTopPercent: Float = 0f,
     val danmakuBottomPercent: Float = 0f,
     val aspectMode: AspectMode = AspectMode.Fit,
+    val playerCore: PlayerCore = PlayerCore.Exo,
+    val decoderMode: DecoderMode = DecoderMode.Hardware,
+    /**
+     * 每次起播应用的默认倍速，与 [speed]（当前会话的倍速）刻意分开：
+     * 用户在 OSD 里临时调到 2x 追一集，不该让下一集、下次开机也从 2x 开始。
+     * 合法档位与 [PlayerSpeedOptions] 同一份，读回时用 minByOrNull 夹到最近档。
+     */
+    val defaultSpeed: Float = 1.0f,
+    val skipIntroEnabled: Boolean = true,
+    val skipOutroEnabled: Boolean = true,
 ) {
     /** 弹幕可绘制区域从屏幕顶部让出的比例 */
     val topRatio: Float
@@ -135,6 +164,14 @@ private object Keys {
     val DANMAKU_TOP = floatPreferencesKey("danmaku_top_percent")
     val DANMAKU_BOTTOM = floatPreferencesKey("danmaku_bottom_percent")
     val ASPECT_MODE = stringPreferencesKey("aspect_mode")
+
+    // 新增键一律「缺失 = 默认值」：旧版本升级上来的用户没有这些键，
+    // 读不到时落到 data class 的默认值上，不需要任何迁移代码
+    val PLAYER_CORE = stringPreferencesKey("player_core")
+    val DECODER_MODE = stringPreferencesKey("decoder_mode")
+    val DEFAULT_SPEED = floatPreferencesKey("default_speed")
+    val SKIP_INTRO = booleanPreferencesKey("skip_intro_enabled")
+    val SKIP_OUTRO = booleanPreferencesKey("skip_outro_enabled")
 }
 
 object PlayerSettingsStoreImpl {
@@ -168,6 +205,11 @@ private class DataStorePlayerSettingsStore(
             prefs[Keys.DANMAKU_TOP] = settings.danmakuTopPercent
             prefs[Keys.DANMAKU_BOTTOM] = settings.danmakuBottomPercent
             prefs[Keys.ASPECT_MODE] = settings.aspectMode.name
+            prefs[Keys.PLAYER_CORE] = settings.playerCore.name
+            prefs[Keys.DECODER_MODE] = settings.decoderMode.name
+            prefs[Keys.DEFAULT_SPEED] = settings.defaultSpeed
+            prefs[Keys.SKIP_INTRO] = settings.skipIntroEnabled
+            prefs[Keys.SKIP_OUTRO] = settings.skipOutroEnabled
         }
     }
 }
@@ -187,5 +229,17 @@ private fun Preferences.toSettings(): PlayerSettings {
         danmakuBottomPercent = (this[Keys.DANMAKU_BOTTOM] ?: 0f).coerceIn(0f, MarginMaxPercent),
         aspectMode = AspectMode.entries.firstOrNull { it.name == this[Keys.ASPECT_MODE] }
             ?: AspectMode.Fit,
+        // 枚举按 name 匹配，匹配不上（改过枚举 / 脏数据）就回落默认值，绝不抛
+        playerCore = PlayerCore.entries.firstOrNull { it.name == this[Keys.PLAYER_CORE] }
+            ?: PlayerCore.Exo,
+        decoderMode = DecoderMode.entries.firstOrNull { it.name == this[Keys.DECODER_MODE] }
+            ?: DecoderMode.Hardware,
+        // 倍速必须落在合法档位上：手写 SharedPreferences 或旧版本可能留下 1.7x 这种值，
+        // 直接用会让 OSD 的选中态没有一项匹配（cycleSpeed 里 indexOfFirst 返回 -1）
+        defaultSpeed = PlayerSpeedOptions
+            .minByOrNull { kotlin.math.abs(it.value - (this[Keys.DEFAULT_SPEED] ?: 1.0f)) }
+            ?.value ?: 1.0f,
+        skipIntroEnabled = this[Keys.SKIP_INTRO] ?: true,
+        skipOutroEnabled = this[Keys.SKIP_OUTRO] ?: true,
     )
 }

@@ -35,7 +35,17 @@ object CarouselSource {
             "Chrome/120.0.0.0 Mobile Safari/537.36"
 
     /** 轮播条数：再多在电视上就成"翻不完"，10 条足够撑起一个循环 */
-    private const val MAX_ITEMS = 10
+    /**
+     * 首页推荐位一次抓多少个 cid。
+     *
+     * 实测 v.qq.com 首页（以及 /channel/choice 精选页，两者内容完全重合）
+     * 全站只暴露 **14** 个 /x/cover 链接，这就是推荐位的物理上限。
+     * 抓取上限设成比它大的数没有意义——多出来的循环只是空转。
+     *
+     * 也不用 URL 参数翻页：/channel/xxx?page=2 实测返回的仍是同一批 15 条，
+     * 频道页没有可解析的分页结构。
+     */
+    private const val MAX_ITEMS = 20
 
     /**
      * 补全 meta 的并发上限。eps 是重接口（返回整部剧的全部 vids），
@@ -47,7 +57,7 @@ object CarouselSource {
 
     /**
      * 独立 client 而不是复用 Api.http：这里要的是 8 秒硬时限。
-     * 首页 HTML 拿不到就该立刻放弃回退到旧横幅，不能让用户对着空横幅等 30 秒。
+     * 首页 HTML 拿不到就该立刻放弃、交给持久化缓存，不能让用户对着空首页等 30 秒。
      */
     private val htmlClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -59,8 +69,8 @@ object CarouselSource {
     }
 
     /**
-     * 抓首页 → 提 cid → 并发补全。任何一步整体失败都返回空列表：
-     * 轮播是"更好看"，不是"能看"，调用方（Repo.homeCarousel）据此回退旧横幅。
+     * 抓首页 → 提 cid → 并发补全。任何一步整体失败都返回空列表，
+     * 由 ViewModel 的持久化缓存顶上——这里没有第二名数据来源可以回退。
      * 单条失败只丢这一条，不影响其它条目。
      */
     suspend fun load(): List<VideoItem> {

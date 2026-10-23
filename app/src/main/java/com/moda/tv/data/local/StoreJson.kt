@@ -21,7 +21,10 @@ internal object LibraryJson {
             sb.append("\"episodeIndex\":").append(e.episodeIndex).append(',')
             sb.append("\"positionMs\":").append(e.positionMs).append(',')
             sb.append("\"durationMs\":").append(e.durationMs).append(',')
-            sb.append("\"updatedAt\":").append(e.updatedAt)
+            sb.append("\"updatedAt\":").append(e.updatedAt).append(',')
+            // 布尔写成 JSON 的 true/false（不加引号）：与旧数据的差别只有这一个键，
+            // 旧版本读到未知键会走 skipValue()，因此新数据在老版本上至少还能读回其它字段
+            sb.append("\"completed\":").append(e.completed)
             sb.append('}')
         }
         sb.append(']')
@@ -32,10 +35,49 @@ internal object LibraryJson {
     fun decode(raw: String?): List<LibraryEntry> {
         if (raw.isNullOrBlank()) return emptyList()
         return try {
-            Parser(raw).parseEntries()
+            normalizeByCid(Parser(raw).parseEntries())
         } catch (_: Exception) {
             emptyList()
         }
+    }
+
+    /**
+     * 已看完列表专用：去重口径是 (cid + episodeIndex)，不是 cid。
+     *
+     * 与 [decode] 拆成两个入口而不是加一个参数，是因为这两种去重一旦用错，
+     * 症状完全相反却都很难查：历史按 cid 去重，用错成按集去重 → 同一部剧堆出几十条；
+     * 已看完按集去重，用错成按 cid 去重 → 一部剧只剩最后一集，其它集全被吃掉。
+     */
+    fun decodeEpisodes(raw: String?): List<LibraryEntry> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return try {
+            normalizeByEpisode(Parser(raw).parseEntries())
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    /** 同 cid 只留 updatedAt 最新的一条，防止历史脏数据把去重前提破坏掉 */
+    private fun normalizeByCid(list: List<LibraryEntry>): List<LibraryEntry> {
+        val byCid = LinkedHashMap<String, LibraryEntry>(list.size)
+        for (e in list) {
+            if (e.cid.isBlank()) continue
+            val prev = byCid[e.cid]
+            byCid[e.cid] = if (prev == null || e.updatedAt >= prev.updatedAt) e else prev
+        }
+        return byCid.values.toList()
+    }
+
+    /** 同 (cid, episodeIndex) 只留 updatedAt 最新的一条；已看完列表用这个口径 */
+    private fun normalizeByEpisode(list: List<LibraryEntry>): List<LibraryEntry> {
+        val byEp = LinkedHashMap<String, LibraryEntry>(list.size)
+        for (e in list) {
+            if (e.cid.isBlank()) continue
+            val key = e.cid + "#" + e.episodeIndex
+            val prev = byEp[key]
+            byEp[key] = if (prev == null || e.updatedAt >= prev.updatedAt) e else prev
+        }
+        return byEp.values.toList()
     }
 
     private const val HEX = "0123456789abcdef"
@@ -82,7 +124,7 @@ internal object LibraryJson {
                 ws()
                 when (next()) {
                     ',' -> Unit
-                    ']' -> return normalize(out)
+                    ']' -> return out
                     else -> fail()
                 }
             }
@@ -97,12 +139,16 @@ internal object LibraryJson {
             var positionMs = 0L
             var durationMs = 0L
             var updatedAt = 0L
+            // 旧数据没有这个键，缺省就是 false——向后兼容靠这一行，不要改成必填
+            var completed = false
             ws()
             expect('{')
             ws()
             if (peek() == '}') {
                 i++
-                return LibraryEntry(cid, vid, title, cover, episodeIndex, positionMs, durationMs, updatedAt)
+                return LibraryEntry(
+                    cid, vid, title, cover, episodeIndex, positionMs, durationMs, updatedAt, completed,
+                )
             }
             while (true) {
                 ws()
@@ -119,28 +165,18 @@ internal object LibraryJson {
                     "positionMs" -> positionMs = asLong()
                     "durationMs" -> durationMs = asLong()
                     "updatedAt" -> updatedAt = asLong()
+                    "completed" -> completed = asBool()
                     else -> skipValue()
                 }
                 ws()
                 when (next()) {
                     ',' -> Unit
                     '}' -> return LibraryEntry(
-                        cid, vid, title, cover, episodeIndex, positionMs, durationMs, updatedAt,
+                        cid, vid, title, cover, episodeIndex, positionMs, durationMs, updatedAt, completed,
                     )
                     else -> fail()
                 }
             }
-        }
-
-        /** 同 cid 只留 updatedAt 最新的一条，防止历史脏数据把去重前提破坏掉 */
-        private fun normalize(list: List<LibraryEntry>): List<LibraryEntry> {
-            val byCid = LinkedHashMap<String, LibraryEntry>(list.size)
-            for (e in list) {
-                if (e.cid.isBlank()) continue
-                val prev = byCid[e.cid]
-                byCid[e.cid] = if (prev == null || e.updatedAt >= prev.updatedAt) e else prev
-            }
-            return byCid.values.toList()
         }
 
         private fun asString(): String {
@@ -154,6 +190,12 @@ internal object LibraryJson {
             val c = peek()
             if (c == '"') return parseString().toLongOrNull() ?: 0L
             return readNumberLike().toLongOrNull() ?: 0L
+        }
+
+        /** 布尔容忍裸 true/false 与字符串 "true"：旧数据里两种写法都可能出现 */
+        private fun asBool(): Boolean {
+            val raw = if (peek() == '"') parseString() else readNumberLike()
+            return raw.equals("true", ignoreCase = true) || raw == "1"
         }
 
         private fun readNumberLike(): String {
@@ -266,4 +308,41 @@ internal object LibraryOps {
 
     fun remove(existing: List<LibraryEntry>, cid: String): List<LibraryEntry> =
         existing.filterNot { it.cid == cid }
+
+    /**
+     * 已看完列表的写入：去重口径是 **cid + episodeIndex**，不是 cid。
+     *
+     * 一部剧可能看完好几集（用户跳着看），按 cid 去重会把前面几集全吃掉，
+     * 详情页的「看完」角标就只剩最后一集。其余规则与 [upsert] 完全一致：
+     * 刷 updatedAt、按 updatedAt 倒序、超 [max] 裁剪最旧的。
+     *
+     * [LibraryEntry.completed] 由调用方决定，这里不强行改写成 true——
+     * 这条数据将来若也要承载「看过但没看完」，硬编码会把语义写死在这一层。
+     */
+    fun upsertEpisode(
+        existing: List<LibraryEntry>,
+        entry: LibraryEntry,
+        max: Int,
+        now: Long,
+    ): List<LibraryEntry> {
+        val stamped = entry.copy(updatedAt = maxOf(entry.updatedAt, now))
+        val merged = ArrayList<LibraryEntry>(existing.size + 1)
+        var replaced = false
+        for (e in existing) {
+            if (e.cid == stamped.cid && e.episodeIndex == stamped.episodeIndex) {
+                if (!replaced) {
+                    merged += stamped
+                    replaced = true
+                }
+            } else {
+                merged += e
+            }
+        }
+        if (!replaced) merged += stamped
+        return sortDesc(merged).take(max)
+    }
+
+    /** 删一集：只删 (cid, episodeIndex) 这一条，同剧其它已看完的集不动 */
+    fun removeEpisode(existing: List<LibraryEntry>, cid: String, episodeIndex: Int): List<LibraryEntry> =
+        existing.filterNot { it.cid == cid && it.episodeIndex == episodeIndex }
 }
