@@ -58,6 +58,8 @@ import com.moda.tv.data.local.DecoderMode
 import com.moda.tv.data.local.IntroOutro
 import com.moda.tv.data.local.IntroOutroRules
 import com.moda.tv.data.local.IntroOutroStoreImpl
+import com.moda.tv.data.local.PlaybackOverride
+import com.moda.tv.data.local.PlaybackOverrideStoreImpl
 import com.moda.tv.data.local.PlayerCore
 import com.moda.tv.data.local.PlayerSettings
 import com.moda.tv.data.local.PlayerSettingsStoreImpl
@@ -349,10 +351,16 @@ fun PlayerScreen(
     var focusedEpisodeIndex by remember { mutableIntStateOf(0) }
     var aspectPanelVisible by remember { mutableStateOf(false) }
     var focusedAspectIndex by remember { mutableIntStateOf(0) }
+    var corePanelVisible by remember { mutableStateOf(false) }
+    var focusedCoreIndex by remember { mutableIntStateOf(0) }
+    var decoderPanelVisible by remember { mutableStateOf(false) }
+    var focusedDecoderIndex by remember { mutableIntStateOf(0) }
 
     // 设置从 DataStore 读进来，读到之前先用默认值，读到之后整页沿用上次的配置
     val settingsStore = remember(context) { PlayerSettingsStoreImpl.create(context) }
     val introOutroStore = remember(context) { IntroOutroStoreImpl.create(context) }
+    // 播放页里改的内核/软硬解只记在本剧（moda_playback_override），全局设置只当默认值用
+    val overrideStore = remember(context) { PlaybackOverrideStoreImpl.create(context) }
     var settings by remember { mutableStateOf(PlayerSettings()) }
     LaunchedEffect(settingsStore) {
         val loaded = settingsStore.current()
@@ -362,6 +370,12 @@ fun PlayerScreen(
         // 会话一开始把 speed 播种成 defaultSpeed，之后用户在 OSD 里改的只动 speed。
         // 于是「这一集用 2x 追完」不会污染下次开机的起点，也不会出现两套互相打架的状态。
         settings = loaded.copy(speed = loaded.defaultSpeed)
+    }
+
+    // 本剧的覆盖值；空覆盖 = 跟随设置页默认（读取是异步的，读到之前先按默认播）
+    var playbackOverride by remember(cid) { mutableStateOf(PlaybackOverride()) }
+    LaunchedEffect(cid) {
+        playbackOverride = if (cid.isBlank()) PlaybackOverride() else overrideStore.get(cid)
     }
 
     var marks by remember(cid) { mutableStateOf(IntroOutro()) }
@@ -417,12 +431,19 @@ fun PlayerScreen(
      * 用户选了 IJK 但包里没有 so 时工厂会静默回退 Exo，渲染视图也必须跟着回退，
      * 否则会拿 SurfaceView 去配一个 Exo 引擎——必然黑屏。
      */
-    val effectiveCore = if (settings.playerCore == PlayerCore.Ijk && ijkUsable) {
+    /**
+     * 本剧实际要用的内核 / 解码：本剧覆盖优先，没有覆盖才回落到设置页的默认值。
+     * 单一出口，任何地方都不要再直接读 settings.playerCore / settings.decoderMode。
+     */
+    val wantedCore = playbackOverride.core ?: settings.playerCore
+    val wantedDecoder = playbackOverride.decoder ?: settings.decoderMode
+
+    val effectiveCore = if (wantedCore == PlayerCore.Ijk && ijkUsable) {
         PlayerCore.Ijk
     } else {
         PlayerCore.Exo
     }
-    val hardware = settings.decoderMode == DecoderMode.Hardware
+    val hardware = wantedDecoder == DecoderMode.Hardware
 
     /**
      * 引擎重建的 key：地址、重试次数、内核、软硬解。
@@ -452,6 +473,8 @@ fun PlayerScreen(
         speedPanelVisible -> OsdSlot.Speed
         danmakuPanelVisible -> OsdSlot.Danmaku
         aspectPanelVisible -> OsdSlot.Aspect
+        corePanelVisible -> OsdSlot.Core
+        decoderPanelVisible -> OsdSlot.Decoder
         else -> null
     }
 
@@ -463,6 +486,8 @@ fun PlayerScreen(
         danmakuPanelVisible = false
         episodePanelVisible = false
         aspectPanelVisible = false
+        corePanelVisible = false
+        decoderPanelVisible = false
     }
 
     fun updateSettings(next: PlayerSettings) {
@@ -485,6 +510,45 @@ fun PlayerScreen(
         updateSettings(settings.copy(speed = PlayerSpeedOptions[focusedSpeedIndex].value))
     }
 
+    /**
+     * 写入本剧覆盖。
+     *
+     * 两个约定：
+     *  · 与设置页默认相同 → 存 null（删键），否则「恢复默认」就只能靠再进设置页改回来，
+     *    而且会留下一堆等值记录（AGENTS：恢复默认 = 删键）；
+     *  · 覆盖值进的是 engine 的 remember key（解码方式只能在构造时决定），
+     *    所以写一次就等于「重建引擎并从原位置续播」。
+     */
+    fun applyOverride(next: PlaybackOverride) {
+        playbackOverride = next
+        if (cid.isBlank()) return
+        scope.launch {
+            try {
+                overrideStore.save(cid, next)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // 静默：这一集继续按刚选的值播，下次进来回到默认而已
+            }
+        }
+    }
+
+    fun cycleCore(delta: Int) {
+        val entries = PlayerCore.entries
+        val i = entries.indexOf(wantedCore).coerceAtLeast(0)
+        val next = entries[(i + delta).mod(entries.size)]
+        focusedCoreIndex = entries.indexOf(next)
+        applyOverride(playbackOverride.copy(core = next.takeIf { it != settings.playerCore }))
+    }
+
+    fun cycleDecoder(delta: Int) {
+        val entries = DecoderMode.entries
+        val i = entries.indexOf(wantedDecoder).coerceAtLeast(0)
+        val next = entries[(i + delta).mod(entries.size)]
+        focusedDecoderIndex = entries.indexOf(next)
+        applyOverride(playbackOverride.copy(decoder = next.takeIf { it != settings.decoderMode }))
+    }
+
     fun adjustDanmakuItem(delta: Int) {
         val item = DanmakuItems.getOrNull(focusedDanmakuItem) ?: return
         updateSettings(adjustDanmaku(settings, item, delta))
@@ -504,6 +568,8 @@ fun PlayerScreen(
             OsdSlot.Speed -> speedPanelVisible = false
             OsdSlot.Danmaku -> danmakuPanelVisible = false
             OsdSlot.Aspect -> aspectPanelVisible = false
+            OsdSlot.Core -> corePanelVisible = false
+            OsdSlot.Decoder -> decoderPanelVisible = false
             OsdSlot.Intro, OsdSlot.Outro, null -> Unit
         }
     }
@@ -521,6 +587,9 @@ fun PlayerScreen(
             // 档位条选中即生效：移动就是改值，不需要再按确认
             OsdSlot.Speed -> cycleSpeed(delta)
             OsdSlot.Aspect -> cycleAspect(delta)
+            // 内核/解码只有两档：左右键就是来回翻，选中即生效
+            OsdSlot.Core -> cycleCore(delta)
+            OsdSlot.Decoder -> cycleDecoder(delta)
             // 横滑选集：左右只移焦点，确认键才真正切集
             OsdSlot.Episode -> focusedEpisodeIndex = (focusedEpisodeIndex + delta)
                 .coerceIn(0, episodes.lastIndex.coerceAtLeast(0))
@@ -730,6 +799,8 @@ fun PlayerScreen(
         danmakuPanelVisible,
         episodePanelVisible,
         aspectPanelVisible,
+        corePanelVisible,
+        decoderPanelVisible,
     ) {
         // 任一面板展开时都不自动收起，否则用户还没选完 OSD 就消失了
         if (!osdVisible || anyPanelVisible()) return@LaunchedEffect
@@ -935,6 +1006,21 @@ fun PlayerScreen(
                                     focusedAspectIndex = AspectModes.indexOf(settings.aspectMode)
                                         .coerceAtLeast(0)
                                 }
+                                // 内核/解码同样是横向档位条：开面板时焦点落在当前值上
+                                OsdSlot.Core -> {
+                                    closePanels()
+                                    corePanelVisible = true
+                                    focusedCoreIndex = PlayerCore.entries
+                                        .indexOf(wantedCore)
+                                        .coerceAtLeast(0)
+                                }
+                                OsdSlot.Decoder -> {
+                                    closePanels()
+                                    decoderPanelVisible = true
+                                    focusedDecoderIndex = DecoderMode.entries
+                                        .indexOf(wantedDecoder)
+                                        .coerceAtLeast(0)
+                                }
                                 // 片头/片尾不展开面板：记录动作已在 onKeyEvent 出口处理
                                 OsdSlot.Intro, OsdSlot.Outro -> Unit
                             }
@@ -1061,6 +1147,13 @@ fun PlayerScreen(
                 focusedDanmakuItem = focusedDanmakuItem,
                 aspectPanelVisible = aspectPanelVisible,
                 focusedAspectIndex = focusedAspectIndex,
+                corePanelVisible = corePanelVisible,
+                focusedCoreIndex = focusedCoreIndex,
+                decoderPanelVisible = decoderPanelVisible,
+                focusedDecoderIndex = focusedDecoderIndex,
+                effectiveCore = effectiveCore,
+                effectiveDecoder = wantedDecoder,
+                ijkUsable = ijkUsable,
                 clockText = clockText,
                 introMs = marks.introMs,
                 outroMs = marks.outroMs,

@@ -21,6 +21,7 @@ import com.moda.tv.data.local.FavoritesStore
 import com.moda.tv.data.local.FavoritesStoreImpl
 import com.moda.tv.data.local.HistoryStore
 import com.moda.tv.data.local.HistoryStoreImpl
+import com.moda.tv.data.local.PlaybackOverrideStoreImpl
 import com.moda.tv.data.local.HomeCacheStore
 import com.moda.tv.data.local.HomeCacheStoreImpl
 import com.moda.tv.data.local.HomeSnapshot
@@ -129,6 +130,8 @@ data class DetailResume(
 class TvViewModel(private val app: Context) : ViewModel() {
 
     private val history: HistoryStore = HistoryStoreImpl.create(app)
+    /** 播放页里按剧改过内核/软硬解的覆盖值；生命周期跟着观看记录走 */
+    private val playbackOverrideStore = PlaybackOverrideStoreImpl.create(app)
     // ============ 收藏模块（勿删）============
     /** 收藏与历史是两套独立 DataStore（moda_favorites / moda_history），互不读写 */
     private val favorites: FavoritesStore = FavoritesStoreImpl.create(app)
@@ -832,6 +835,15 @@ class TvViewModel(private val app: Context) : ViewModel() {
             } catch (e: Exception) {
                 // 历史已删成功，联动失败只是留一条标记，不影响页面
             }
+            // 本剧在播放页里单独设的内核/硬软解同理：历史没了，这条覆盖就再也找不到入口，
+            // 留着只会变成一份用户看不见、也删不掉的残留
+            try {
+                playbackOverrideStore.remove(cid)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // 同上：删不掉只是多一条有界的残留（有 MAX 兜底），不影响页面
+            }
         }
     }
 
@@ -844,13 +856,20 @@ class TvViewModel(private val app: Context) : ViewModel() {
             } catch (e: Exception) {
                 // 同上：清空失败不弹错、不崩溃
             }
-            // 与单条删除同一套语义：清空历史 → 片头片尾标记一并清空
+            // 与单条删除同一套语义：清空历史 → 片头片尾标记、按剧的播放覆盖一并清空
             try {
                 introOutro.clear()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 // 历史已清空，标记清理失败不阻塞用户
+            }
+            try {
+                playbackOverrideStore.clear()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // 同上
             }
         }
     }

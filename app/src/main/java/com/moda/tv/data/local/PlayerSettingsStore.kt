@@ -71,9 +71,11 @@ const val MarginMaxPercent = 70f
 const val MarginCombinedMaxPercent = 70f
 
 /**
- * 播放内核。Exo 是默认、也是唯一已在用的实现；IJK 由后续任务接入，
- * 这里先把「用户选了哪个」持久化下来——开关早于实现上线，总比实现上线时
- * 再回头改存储格式、做一次数据迁移省事。
+ * 播放内核。
+ *
+ * 这里是**默认值**：播放页里改的是「本剧覆盖」，存在 [PlaybackOverrideStore]，
+ * 删历史时跟着一起清。两处不要混用——把播放页的改动写进这里，
+ * 会让一次临时切换变成所有剧的新默认。
  */
 enum class PlayerCore(val label: String) {
     Exo("ExoPlayer"),
@@ -83,6 +85,7 @@ enum class PlayerCore(val label: String) {
 /**
  * 解码方式。硬解省电、4K 更流畅；软解兼容性更好（老电视 / 编码特殊的老片）。
  * 具体怎么把这两个值交给播放器由播放侧决定，存储层只负责原样保存与回读。
+ * 与 [PlayerCore] 一样，这里的值是默认值，单剧覆盖见 [PlaybackOverrideStore]。
  */
 enum class DecoderMode(val label: String) {
     Hardware("硬解"),
