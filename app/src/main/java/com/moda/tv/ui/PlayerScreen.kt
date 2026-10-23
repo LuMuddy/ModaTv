@@ -79,6 +79,7 @@ import com.moda.tv.model.PlayerError
 import com.moda.tv.model.Tier
 import com.moda.tv.model.TierName
 import com.moda.tv.ui.player.tierNameText
+import com.moda.tv.ui.player.DanmakuItem
 import com.moda.tv.ui.player.DanmakuItems
 import com.moda.tv.ui.player.DanmakuOverlay
 import com.moda.tv.ui.player.OsdSlot
@@ -186,8 +187,6 @@ private const val BufferingShowDelayMs = 400L
 private const val SeekStepMs = 10_000L
 private const val TickMs = 300L
 private const val ProgressReportMs = 1000L
-/** 长按多久算「要清除」，短于它按短按处理 */
-private const val MarkLongPressMs = 800L
 /** 焦点整页丢失后等多久再抢：窗口切换与布局变化常连着来，立刻抢会与同一帧的重组互相打断 */
 private const val FocusRegainDelayMs = 300L
 /** 不可用档提示的停留时间：要让用户看清并决定换哪档，又不至于一直挂着 */
@@ -485,6 +484,8 @@ fun PlayerScreen(
      */
     val wantedCore = playbackOverride.core ?: settings.playerCore
     val wantedDecoder = playbackOverride.decoder ?: settings.decoderMode
+    // 弹幕开关同属「本剧覆盖优先，没有覆盖回落全局默认」；OSD 压暗、Overlay 显隐都只认它
+    val effectiveDanmakuEnabled = playbackOverride.danmakuEnabled ?: settings.danmakuEnabled
 
     val effectiveCore = if (wantedCore == PlayerCore.Ijk && ijkUsable) {
         PlayerCore.Ijk
@@ -601,6 +602,16 @@ fun PlayerScreen(
 
     fun adjustDanmakuItem(delta: Int) {
         val item = DanmakuItems.getOrNull(focusedDanmakuItem) ?: return
+        // 只有「开关」是本剧覆盖：字号 / 区域 / 边距仍是全局偏好，继续走 updateSettings。
+        if (item == DanmakuItem.Enabled) {
+            // 与全局默认相同 → 存 null（删键），与 core/decoder 同一条「恢复默认」约定
+            applyOverride(
+                playbackOverride.copy(
+                    danmakuEnabled = (!effectiveDanmakuEnabled).takeIf { it != settings.danmakuEnabled },
+                ),
+            )
+            return
+        }
         updateSettings(adjustDanmaku(settings, item, delta))
     }
 
@@ -973,33 +984,6 @@ fun PlayerScreen(
         scope.launch { persistMark(isIntro, now) }
     }
 
-    /** 长按清除：删掉这一项，按钮回到文字占位 */
-    fun clearMark(isIntro: Boolean) {
-        marks = if (isIntro) marks.copy(introMs = 0L) else marks.copy(outroMs = 0L)
-        scope.launch { persistMark(isIntro, 0L) }
-    }
-
-    /**
-     * 长按计时器。
-     * 按下瞬间就记录，按住越过 [MarkLongPressMs] 再清除——
-     * 动作全部挂在 DOWN 上，是因为遥控器的 UP 不保证送达，
-     * 把短按放在 UP 上会出现「按下没反应」。
-     */
-    var markHoldJob by remember { mutableStateOf<Job?>(null) }
-
-    fun armLongPress(isIntro: Boolean) {
-        markHoldJob?.cancel()
-        markHoldJob = scope.launch {
-            delay(MarkLongPressMs)
-            clearMark(isIntro)
-        }
-    }
-
-    fun cancelLongPress() {
-        markHoldJob?.cancel()
-        markHoldJob = null
-    }
-
     fun togglePlay() {
         if (playError != null) return
         if (engine.isPlaying) {
@@ -1053,22 +1037,16 @@ fun PlayerScreen(
                         (it == OsdSlot.Intro || it == OsdSlot.Outro)
                 }
                 if (markSlot != null) {
-                    // 只认首次按下（repeatCount == 0），重复事件一律忽略。
-                    // 踩过的坑：原来用 !isLongPress 过滤，但该标记只在**第一发**重复事件上为 true，
-                    // 第二发起又是 false——按住不放时每个重复键都会重新记录并重启 800ms 清除计时器，
-                    // 重复间隔（约 50~100ms）远小于 800ms，计时器永远被续期，长按清除在任何真实遥控器上都触发不了。
+                    // 只认首次按下（repeatCount == 0）：按住不放时系统连发重复 KeyDown，
+                    // 不挡的话每个重复键都会重新执行一次记录
                     if (event.type == KeyEventType.KeyDown &&
                         event.nativeKeyEvent.repeatCount == 0
                     ) {
                         recordMark(markSlot == OsdSlot.Intro)
-                        armLongPress(markSlot == OsdSlot.Intro)
                     }
-                    if (event.type == KeyEventType.KeyUp) cancelLongPress()
                     showOsd()
                     return@onKeyEvent true
                 }
-                // 焦点已离开片头/片尾时，任何按键都要撤销悬挂的长按计时
-                if (event.type == KeyEventType.KeyUp) cancelLongPress()
                 if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
                 if (playError != null) {
                     return@onKeyEvent when (event.key) {
@@ -1233,7 +1211,7 @@ fun PlayerScreen(
             positionMs = positionMs,
             playing = playing,
             modifier = Modifier.fillMaxSize(),
-            enabled = settings.danmakuEnabled,
+            enabled = effectiveDanmakuEnabled,
             fontSizeSp = settings.danmakuSizeSp,
             topRatio = settings.topRatio,
             bottomRatio = settings.bottomRatio,
@@ -1256,7 +1234,7 @@ fun PlayerScreen(
                 tierHint = unavailableTierName?.let {
                     stringResource(R.string.player_tier_unavailable_hint, tierNameText(it))
                 },
-                settings = settings,
+                settings = settings.copy(danmakuEnabled = effectiveDanmakuEnabled),
                 episodes = episodes,
                 currentEpisodeIndex = currentEpisodeIndex,
                 focusedEpisodeIndex = focusedEpisodeIndex,
