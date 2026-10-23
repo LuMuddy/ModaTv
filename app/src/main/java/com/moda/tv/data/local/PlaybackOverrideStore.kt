@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.longPreferencesKey
@@ -14,16 +15,17 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 
 /**
- * 一部剧在播放页里单独设过的内核 / 硬软解。
+ * 一部剧在播放页里单独设过的内核 / 硬软解 / 弹幕开关。
  *
- * 两个字段都可空，null 表示「跟随设置页的默认值」——这是本文件存在的前提：
+ * 字段都可空，null 表示「跟随设置页的默认值」——这是本文件存在的前提：
  * 播放页里改一次不该把所有剧一起改掉，也不该让这部剧从此钉死在某个值上再也回不去。
  */
 data class PlaybackOverride(
     val core: PlayerCore? = null,
     val decoder: DecoderMode? = null,
+    val danmakuEnabled: Boolean? = null,
 ) {
-    val isEmpty: Boolean get() = core == null && decoder == null
+    val isEmpty: Boolean get() = core == null && decoder == null && danmakuEnabled == null
 }
 
 /**
@@ -65,10 +67,12 @@ private val Context.playbackOverrideDataStore: DataStore<Preferences> by
  */
 private const val CORE_PREFIX = "core_"
 private const val DECODER_PREFIX = "decoder_"
+private const val DANMAKU_PREFIX = "danmaku_"
 private const val TS_PREFIX = "ts_"
 
 private fun coreKey(cid: String) = stringPreferencesKey(CORE_PREFIX + cid)
 private fun decoderKey(cid: String) = stringPreferencesKey(DECODER_PREFIX + cid)
+private fun danmakuKey(cid: String) = booleanPreferencesKey(DANMAKU_PREFIX + cid)
 private fun tsKey(cid: String) = longPreferencesKey(TS_PREFIX + cid)
 
 object PlaybackOverrideStoreImpl {
@@ -103,6 +107,7 @@ private class DataStorePlaybackOverrideStore(
             decoder = prefs[decoderKey(cid)]?.let { name ->
                 DecoderMode.entries.firstOrNull { it.name == name }
             },
+            danmakuEnabled = prefs[danmakuKey(cid)],
         )
     }
 
@@ -115,8 +120,10 @@ private class DataStorePlaybackOverrideStore(
             }
             val core = override.core
             val decoder = override.decoder
+            val danmakuEnabled = override.danmakuEnabled
             if (core != null) prefs[coreKey(cid)] = core.name else prefs.remove(coreKey(cid))
             if (decoder != null) prefs[decoderKey(cid)] = decoder.name else prefs.remove(decoderKey(cid))
+            if (danmakuEnabled != null) prefs[danmakuKey(cid)] = danmakuEnabled else prefs.remove(danmakuKey(cid))
             prefs[tsKey(cid)] = System.currentTimeMillis()
             trim(prefs)
         }
@@ -135,6 +142,8 @@ private class DataStorePlaybackOverrideStore(
                     key.name.startsWith(TS_PREFIX) -> prefs.remove(longPreferencesKey(key.name))
                     key.name.startsWith(CORE_PREFIX) || key.name.startsWith(DECODER_PREFIX) ->
                         prefs.remove(stringPreferencesKey(key.name))
+                    key.name.startsWith(DANMAKU_PREFIX) ->
+                        prefs.remove(booleanPreferencesKey(key.name))
                 }
             }
         }
@@ -143,6 +152,7 @@ private class DataStorePlaybackOverrideStore(
     private fun removeKeys(prefs: MutablePreferences, cid: String) {
         prefs.remove(coreKey(cid))
         prefs.remove(decoderKey(cid))
+        prefs.remove(danmakuKey(cid))
         prefs.remove(tsKey(cid))
     }
 
