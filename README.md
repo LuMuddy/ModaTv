@@ -11,20 +11,23 @@
 
 ## 界面
 
-| 首页（19 个分类 tab） | 详情（续播 + 单行选集轨道） |
+| 首页（19 个分类 tab，推荐 tab 末尾接「继续观看」） | 详情（续播按钮 + 单行选集轨道 + 已看完勾标） |
 | --- | --- |
 | ![首页](docs/screenshots/home.webp) | ![详情](docs/screenshots/detail.webp) |
 
-| 播放器 OSD（九个槽位） | 设置（三个分组 + 版权声明） |
+| 播放器 OSD（九个槽位，含内核 / 解码档位条） | 设置（菜单 + 三个分组子页，版权声明在「关于」里） |
 | --- | --- |
 | ![播放器](docs/screenshots/player.webp) | ![设置](docs/screenshots/settings.webp) |
 
-| 收藏（追剧语义，点条目进详情） |
-| --- |
-| ![收藏](docs/screenshots/favorites.webp) |
+| 收藏（追剧语义，点条目进详情） | 搜索（热词轮播 + 本地搜索历史） |
+| --- | --- |
+| ![收藏](docs/screenshots/favorites.webp) | ![搜索](docs/screenshots/search.webp) |
 
-截图取自 1920×1080 的 Android TV 模拟器。播放页的内核 / 解码槽位与详情页的单行选集轨道
-晚于这批截图，尚未重拍。
+| 历史（最多 60 条，点条目直接续播） | 已看完（按集记录，点卡片从头重播） |
+| --- | --- |
+| ![历史](docs/screenshots/history.webp) | ![已看完](docs/screenshots/completed.webp) |
+
+截图取自 1920×1080 的 Android TV 模拟器，覆盖全部八个页面。
 
 ---
 
@@ -39,8 +42,9 @@
 - 其余 18 个 tab：抓各自的 `https://v.qq.com/channel/<x>` 频道页，用同一条 `/x/cover/<cid>`
   正则提 cid，再走同一套 `eps` 补全——`CarouselSource.fetchCids` / `enrich` 是这两条路径
   共用的唯一实现，差别只有「抓哪个 HTML」，不是两套取数流水线
-- 对 v.qq.com 与后端的请求统一排在 4 个许可后面（`PARALLEL`）：一次整页刷新是 19 个页面
-  加上百个 cid 的补全，不设闸会瞬间打爆对端
+- 抓页面与补全都排在 4 个许可后面（`ChannelSource` / `CarouselSource` 的 `PARALLEL`，
+  频道那条是**整页共享**、不是每频道各 4 路），tab 之间另有一道 6 路的闸
+  （`HOME_TAB_PARALLEL`）：一次整页刷新是 19 个页面加上百个 cid 的补全，不设闸会瞬间打爆对端
 - 继续观看：推荐 tab 末尾接一段「继续观看」（最多 5 条，同列宽网格；没有记录整段不出现），
   点卡片**直接进播放页**，不经过详情
 - 数据源唯一：首页内容**只**来自 v.qq.com，没有搜索兜底。某个频道页抓不到就是这一屏为空，
@@ -73,8 +77,9 @@
 - 收藏 / 取消收藏（追剧语义，独立于播放历史）
 
 **播放器**
-- 内核可切换：Media3 ExoPlayer（默认，HLS 整片 m3u8 优先、失败回退 MP4 直链）
-  与 IJK（ffmpeg 软解，用于 Exo 解不动的老片）；解码可选硬解 / 软解
+- 内核可切换：Media3 ExoPlayer（默认，先走所选档位的 MP4 直链，起播失败才切整片 m3u8
+  HLS 兜底一次，避免两路地址来回循环）与 IJK（ffmpeg 软解，用于 Exo 解不动的老片）；
+  解码可选硬解 / 软解
 - 内核与解码在播放页里也能现场切：两个横向档位条槽位（`内核` / `解码`），左右键换值。
   两者都只能在构造播放器时决定，所以换一次就是「重建引擎 + 从当前进度续播」，
   进度不丢；写盘异步进行，按键不等 IO
@@ -118,12 +123,19 @@
 
 **设置**
 - 菜单 + 三个子页：播放设置（内核 / 解码 / 默认倍速 / 自动跳片头片尾）、
-  网络与数据（代理网址、扫码配置、恢复默认、数据清理）、关于（版本 / 构建号 / Android 版本 / 分辨率）
+  网络与数据（代理网址、扫码配置、恢复默认、数据清理）、关于（版本 / 构建号 / Android 版本 /
+  分辨率，末行是版权声明入口）
+- 菜单页只留三张「进去改东西」的分组卡：版权声明是一次性查看，不占菜单位，混进菜单会让
+  「能改的」和「只能看的」两件事塌成一层
 - 内核 / 解码的说明里写清了「这里是所有剧的默认值，播放页里改的只作用于当前这部剧」
-- 文案全部走 `strings.xml`：`values/` 中文为默认，`values-en/` 英文，两份 key 与占位符一致；
-  数据层不再产出文案，播放内核、解码方式、弹幕字号 / 区域只持有 `@param:StringRes` 资源 id，
-  由 UI 层解析（枚举落盘仍是 `enum.name`，改文案不会让旧数据失联）
-- 版权声明：顶层常驻入口；每次版本升级后自动弹一次（判定按 `versionCode`，不用布尔开关）
+- 文案全部走 string 资源（`res/values/strings_*.xml`，一个页面 / 模块一个文件、键名带前缀）：
+  **只有中文资源，界面语言固定中文，不跟随系统语言**——`values/` 就是默认资源，任何语言
+  环境下都会取到它；再加一份其它语言的资源只会让设置页独自变语言、与其它页面混排
+- 数据层不再产出文案：`Repo` / `Api` / `PlayerEngine` 只抛 `AppError` / `PlayerError`，
+  唯一翻译点是 `ui/components/ErrorText.kt`；播放内核、解码方式、弹幕字号 / 区域只持有
+  `@param:StringRes` 资源 id，由 UI 层解析（枚举落盘仍是 `enum.name`，改文案不会让旧数据失联）
+- 版权声明：「关于」子页最后一行的常驻入口，也是该页**唯一可聚焦的一行**——进页即把首焦点
+  给它，下键不会在五行只读信息之间空转；每次版本升级后自动弹一次（判定按 `versionCode`，不用布尔开关）
 
 ---
 
@@ -193,14 +205,18 @@ AGENTS.md                         编码与协作的强制约定（分层、按�
 CONTRIBUTING.md                   提交信息规范（Conventional Commits + 钩子校验）
 
 app/src/main/assets/index.html   手机端扫码配置页（LanConfigServer 读取后填充占位符）
-app/src/main/res/values/strings*.xml      界面文案，只有中文（界面语言固定中文，不跟随系统语言）
+app/src/main/res/values/strings.xml       通用文案：设置页 / 设置子页 / 错误提示 / 公共词
+app/src/main/res/values/strings_*.xml     按模块拆分：core / data / data2 / detail / home /
+                                          library / player / search / state
+                                          （只有中文资源，界面语言固定中文，不跟随系统语言）
 
 app/src/main/java/com/moda/tv/
 ├── ModaApp.kt              Application：启动前同步注入持久化的代理网址
 ├── MainActivity.kt         单 Activity，全屏沉浸 + Compose 入口
 ├── model/                  纯数据：VideoItem / Episode / Tier / LibraryEntry / HomeTab / HomeFeed
+│                           AppError.kt：结构化错误码 AppError / PlayerError（不含界面文案）
 ├── data/
-│   ├── Api.kt              后端 HTTP 调用与统一错误
+│   ├── Api.kt              后端 HTTP 调用，失败一律落成 AppError
 │   ├── Repo.kt             业务门面：首页推荐/分类流、详情、播放计划、弹幕、热词、档位黑名单
 │   ├── Parser.kt           接口 JSON → 模型的解析
 │   ├── CarouselSource.kt   v.qq.com 首页推荐位 → cid 列表
@@ -217,6 +233,7 @@ app/src/main/java/com/moda/tv/
     ├── *Screen.kt          Search / Player / History / Favorites / Completed / Settings
     ├── SettingsSections.kt 设置三个子页的内容
     ├── components/         卡片、通用状态、最小 OkHttp 图片加载器（不引 Coil）
+    │                       ErrorText.kt：错误码 → 界面文案的唯一翻译点
     ├── player/             OSD、选集 / 倍速 / 弹幕 / 画面比例面板、内核与解码档位条
     │                       （CorePanel）、Canvas 弹幕层、内核抽象
     └── theme/              颜色与字阶
@@ -234,7 +251,7 @@ app/src/main/java/com/moda/tv/
 | --- | --- |
 | `moda_history` | 播放历史（最多 60 条） |
 | `moda_favorites` | 收藏（不设上限） |
-| `moda_completed` | 已看完（按 `cid + 集号` 记录，不设上限） |
+| `moda_completed` | 已看完（按 `cid + 集号` 记录，最多 500 条） |
 | `moda_search_history` | 搜索历史 |
 | `moda_home_cache` | 首页每 tab 的快照 + 上次整页刷新时刻 |
 | `moda_intro_outro` | 每部剧的片头 / 片尾记录点 |
@@ -278,8 +295,7 @@ app/src/main/java/com/moda/tv/
   （没有搜索兜底可退，这是有意的取舍：宁可空，也不拿别处的数据冒充首页）。
 - 设备 token 有有效期，过期后所有业务接口都会返回 `ok=false`。
 - IJK 只打包了 `arm64-v8a` / `armeabi-v7a`，x86 模拟器上不具备 IJK 内核（ExoPlayer 不受影响）。
-- 英文资源目前覆盖设置页、清空确认 / 扫码 / 版权弹窗与播放器档位名；首页、搜索、详情、
-  历史、收藏、已看完以及 OSD 里其余文案仍是中文字面量。
+- 界面语言固定中文，不跟随系统语言：系统语言不是中文时，界面仍然是中文。
 - 未配置单元测试与持续集成，验证方式为真机/模拟器手动走查。
 
 ## 贡献
