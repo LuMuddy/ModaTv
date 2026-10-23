@@ -29,6 +29,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -70,9 +71,8 @@ fun LanConfigDialog(
     onManualEdit: () -> Unit,
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
-    // 局域网地址与 token 在一轮弹窗里固定：换一次弹窗就等于换一次凭据
+    // 局域网地址在一轮弹窗里固定：网络切换要重开弹窗才生效（与端口绑定一起重来）
     val ip = remember { LanNet.lanIpv4() }
-    val token = remember { LanNet.randomToken() }
 
     // StateFlow 而不是 mutableStateOf：onSaved 是在服务端的 IO 协程里回调的，
     // 走 Flow 收集天然线程安全，电视端不用等 DataStore 那次回环就能立刻看到新值
@@ -85,13 +85,17 @@ fun LanConfigDialog(
     var port by remember { mutableStateOf(-1) }
     var startFailed by remember { mutableStateOf(false) }
 
-    val server = remember(token) {
+    // 页面模板放在 assets/config.html，跟着弹窗一起读一次；纯文本几 KB，不必专门开线程
+    val context = LocalContext.current
+    val pageTemplate = remember(context) { LanConfigServer.loadPageTemplate(context) }
+
+    val server = remember(pageTemplate) {
         LanConfigServer(
-            token = token,
             currentBase = { live.value },
             save = save,
             // 服务端在 IO 线程回调，写 Flow 天然线程安全
             onSaved = { saved -> live.value = saved },
+            pageTemplate = pageTemplate,
         )
     }
 
@@ -129,7 +133,7 @@ fun LanConfigDialog(
     }
 
     val lanAddress = if (ip != null && port > 0) "http://$ip:$port" else null
-    val qrContent = lanAddress?.let { "$it/?t=$token" }
+    val qrContent = lanAddress
     val qrBitmap = remember(qrContent) {
         qrContent?.let { LanNet.qrBitmap(it, QR_PIXELS) }
     }
