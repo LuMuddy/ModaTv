@@ -291,7 +291,10 @@ fun VideoCard(
             pressedContainerColor = AccentDeepHi,
             pressedContentColor = Color.White,
         ),
-        scale = CardDefaults.scale(scale = 1f, focusedScale = 1.08f, pressedScale = 1f),
+        // 不放大：scale 只改绘制、不改布局，超出视口的那一截会被 Lazy 网格视口切掉，
+        // 表现就是「光标移到第一行/最后一行时，选中框少一条边」。
+        // 焦点态由白描边 + 底色变化表达（与设置页的 SettingRow 同一套）。
+        scale = CardDefaults.scale(scale = 1f, focusedScale = 1f, pressedScale = 1f),
         border = CardDefaults.border(
             border = Border.None,
             focusedBorder = focusBorder(3.dp, corner),
@@ -317,10 +320,11 @@ fun VideoCard(
                 )
             }
         }
-        Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
             Text(
                 text = item.title,
-                style = TvBody.copy(fontSize = 17.sp),
+                // 与历史/收藏/搜索卡同样的 18sp：同一部剧在两个页面里字号不同最容易被看出来
+                style = TvBody.copy(fontSize = 18.sp),
                 color = contentColor(),
                 maxLines = titleMaxLines,
                 overflow = TextOverflow.Ellipsis,
@@ -371,7 +375,8 @@ fun ContinueWatchingCard(
             pressedContainerColor = AccentDeepHi,
             pressedContentColor = Color.White,
         ),
-        scale = CardDefaults.scale(scale = 1f, focusedScale = 1.06f, pressedScale = 1f),
+        // 同 VideoCard：网格里不放大，避免聚焦框被视口切边
+        scale = CardDefaults.scale(scale = 1f, focusedScale = 1f, pressedScale = 1f),
         border = CardDefaults.border(
             border = Border.None,
             focusedBorder = focusBorder(3.dp, corner),
@@ -395,10 +400,10 @@ fun ContinueWatchingCard(
                     )
                 }
             }
-            Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
+            Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
                 Text(
                     text = entry.title,
-                    style = TvBody.copy(fontSize = 15.sp),
+                    style = TvBody.copy(fontSize = 16.sp),
                     color = contentColor(),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -408,7 +413,8 @@ fun ContinueWatchingCard(
                     // 集号与进度压在同一行：两行文字会把卡高撑过海报，
                     // 十张并排时下面那半行就永远露不全
                     text = entryEpisodeLabel(entry.episodeIndex) + watchProgressSuffix(entry),
-                    style = TvCaption.copy(fontSize = 12.sp),
+                    // 12sp 在 3 米外只剩噪点：副行统一 14sp，与历史/收藏页同档
+                    style = TvCaption.copy(fontSize = 14.sp),
                     color = secondaryContentColor(),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -802,17 +808,16 @@ fun HeroCarousel(
             LazyRow(
                 state = thumbListState,
                 horizontalArrangement = Arrangement.spacedBy(HERO_THUMB_GAP),
-                // 留白必须写在 LazyRow 的 contentPadding 里，不能写在外层 modifier：
-                // LazyRow 按自身视口裁剪子项，画在视口之外的白描边照样被切掉。
-                // contentPadding 属于视口内部，第 0 张卡的焦点描边因此完整可见。
-                // 上下也留同样的余量：LazyRow 的子项是顶部对齐的，
-                // 只给横向 padding 会让卡片浮在顶部、下边空出一条。
-                contentPadding = PaddingValues(HERO_THUMB_FOCUS_ROOM),
+                // 上下余量留在 contentPadding：横向轨道在纵向不滚动，这段不会被吃掉。
+                // 横向余量必须写在视口之外（下面 modifier 里的 railScrollRoom），
+                // 否则按「左」回到第 0 张时那 8dp 已经被滚掉了，焦点框会贴到容器边上。
+                contentPadding = PaddingValues(vertical = HERO_THUMB_FOCUS_ROOM),
                 // LazyRow 在 Box 里默认会被撑满，这里必须显式 wrapContent，否则缩略图不可见
                 modifier = Modifier
                     .wrapContentSize(Alignment.BottomEnd)
                     // 高度同样要给描边留余量：聚焦放大 + 3dp 描边会超出卡片高度
-                    .height(HERO_THUMB_HEIGHT + HERO_THUMB_FOCUS_ROOM * 2),
+                    .height(HERO_THUMB_HEIGHT + HERO_THUMB_FOCUS_ROOM * 2)
+                    .railScrollRoom(HERO_THUMB_FOCUS_ROOM),
             ) {
                 // 全部条目都交给 LazyRow 管理，容器宽度决定露出几张：
                 // 4.5 张（4 整张 + 第 5 张只露一半），右端那半张就是「还有更多」的提示。
@@ -926,7 +931,8 @@ fun EpisodeChip(
             pressedContainerColor = AccentDeep,
             pressedContentColor = Color.White,
         ),
-        scale = CardDefaults.scale(scale = 1f, focusedScale = 1.08f, pressedScale = 1f),
+        // 选集轨道是横向 LazyRow，同样会把子项的放大溢出裁掉（首格/末格的左/右边被切平）
+        scale = CardDefaults.scale(scale = 1f, focusedScale = 1f, pressedScale = 1f),
         border = CardDefaults.border(
             border = if (selected) focusBorder(2.dp, corner, ModaColors.AccentSoft) else Border.None,
             focusedBorder = focusBorder(3.dp, corner),
@@ -1047,7 +1053,7 @@ fun SearchResultCard(
             pressedContainerColor = AccentDeepHi,
             pressedContentColor = Color.White,
         ),
-        scale = CardDefaults.scale(scale = 1f, focusedScale = 1.06f, pressedScale = 1f),
+        scale = CardDefaults.scale(scale = 1f, focusedScale = 1f, pressedScale = 1f),
         border = CardDefaults.border(
             border = Border.None,
             focusedBorder = focusBorder(3.dp, corner),

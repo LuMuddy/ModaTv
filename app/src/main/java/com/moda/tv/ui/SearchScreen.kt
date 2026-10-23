@@ -16,7 +16,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -63,12 +65,14 @@ import androidx.tv.material3.Surface
 import androidx.tv.material3.SurfaceDefaults
 import com.moda.tv.model.VideoItem
 import com.moda.tv.ui.components.ListMetrics
-import com.moda.tv.ui.components.listItemInset
+import com.moda.tv.ui.components.railScrollRoom
 import com.moda.tv.ui.components.ActionButton
 import com.moda.tv.ui.components.EmptyState
 import com.moda.tv.ui.components.ErrorState
 import com.moda.tv.ui.components.LoadingState
 import com.moda.tv.ui.components.SectionTitle
+import com.moda.tv.ui.components.TvGridFocusScroll
+import com.moda.tv.ui.components.TvRowFocusScroll
 import com.moda.tv.ui.components.VideoCard
 import com.moda.tv.ui.theme.ModaColors
 import com.moda.tv.ui.theme.TvBody
@@ -113,6 +117,10 @@ fun SearchScreen(
 
     val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
+    // TV 的按行跟焦（见 TvGridFocusScroll）：焦点项下标进状态，滚动按"整行"接管
+    val resultGridState = rememberLazyGridState()
+    var resultFocusIndex by remember { mutableIntStateOf(-1) }
+    TvGridFocusScroll(state = resultGridState, focusedIndex = resultFocusIndex, columns = 4)
     // 搜索成功后要把焦点从输入框移走，否则方向键继续被输入框吃掉，结果列表点不到
     val focusManager = LocalFocusManager.current
     val inputFocus = remember { FocusRequester() }
@@ -223,7 +231,9 @@ fun SearchScreen(
                 Spacer(Modifier.height(12.dp))
             }
 
-            Box(Modifier.fillMaxSize()) {
+            // weight(1f)：Column 里 fillMaxSize 拿到的是整列高度，结果网格视口
+            // 比屏幕长出一截，末行贴着屏幕下沿被切
+            Box(Modifier.weight(1f).fillMaxWidth()) {
                 when {
                     searching -> LoadingState("正在搜索「$lastQuery」…")
                     error != null -> ErrorState(message = error ?: "", onRetry = { submit(query.text) })
@@ -236,9 +246,13 @@ fun SearchScreen(
                     shown.isEmpty() -> EmptyState("换个关键词试试")
                     else -> LazyVerticalGrid(
                         columns = GridCells.Fixed(4),
-                        contentPadding = ListMetrics.gridContentPadding(top = 0.dp, side = 0.dp),
+                        state = resultGridState,
+                        // 顶部 12dp 落在视口之内：焦点滚动把项顶到视口边时，
+                        // 视口外的留白帮不上忙，首行卡片聚焦放大就会被切平
+                        contentPadding = ListMetrics.gridContentPadding(top = 12.dp, side = 0.dp),
                         horizontalArrangement = Arrangement.spacedBy(20.dp),
-                        verticalArrangement = Arrangement.spacedBy(24.dp),
+                        // 纵向缝隙由每项的 10dp 余量提供（见下方 VideoCard 的 modifier）
+                        verticalArrangement = Arrangement.spacedBy(0.dp),
                         modifier = Modifier.fillMaxSize(),
                     ) {
                         items(count = shown.size, key = { i -> "${shown[i].cid}-${shown[i].vid}-$i" }) { index ->
@@ -246,9 +260,12 @@ fun SearchScreen(
                             VideoCard(
                                 item = item,
                                 onClick = { onOpenDetail(item.cid, item.title) },
-                                // 规则 4：列表项必须留聚焦/点击的溢出余量，
-                                // 否则光标压到视口边缘时白边与点击高亮会被切平
-                                modifier = Modifier.fillMaxWidth().listItemInset(),
+                                // 项自己留 10dp 纵向余量：聚焦放大会向上/下溢出，
+                                // 首末行贴视口时会被网格视口切平（"选中框缺一条边"）
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 10.dp)
+                                    .onFocusChanged { if (it.isFocused) resultFocusIndex = index },
                                 width = null,
                             )
                         }
@@ -284,14 +301,24 @@ private fun IdlePanel(
                 ActionButton(text = "清空历史", onClick = onClearHistory)
             }
             Spacer(Modifier.height(4.dp))
+            // R2：这条轨道也按整格跟焦（左右连按时焦点格不会跑到视口外）
+            val historyState = rememberLazyListState()
+            var historyFocus by remember { mutableIntStateOf(-1) }
+            TvRowFocusScroll(state = historyState, focusedIndex = historyFocus)
             LazyRow(
+                state = historyState,
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
-                // 聚焦放大 1.08 与 3dp 描边会画到条目边界外，LazyRow 会裁掉，留 16dp 才不被切
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-                modifier = Modifier.fillMaxWidth(),
+                // 纵向 12dp 给聚焦放大留余量；横向 16dp 必须写在视口之外（见 railScrollRoom），
+                // 否则按「左」回到第一个词时这 16dp 已被滚掉，焦点框会贴住容器边。
+                contentPadding = PaddingValues(vertical = 12.dp),
+                modifier = Modifier.fillMaxWidth().railScrollRoom(16.dp),
             ) {
-                items(history, key = { word -> "h-$word" }) { word ->
-                    WordChip(text = word, onClick = { onPick(word) })
+                itemsIndexed(history, key = { _, word -> "h-$word" }) { index, word ->
+                    WordChip(
+                        text = word,
+                        onClick = { onPick(word) },
+                        modifier = Modifier.onFocusChanged { if (it.isFocused) historyFocus = index },
+                    )
                 }
             }
         }
@@ -329,9 +356,14 @@ private fun HotWordsCarousel(
         LazyRow(
             state = state,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+            // 横向 16dp 同样必须在视口之外：这个列表还会自己 animateScrollToItem 回卷，
+            // 写在 contentPadding 里等于每次自动翻页都把余量吃掉一点
+            contentPadding = PaddingValues(vertical = 12.dp),
             // hasFocus 覆盖整个子树：在条目之间移动焦点时不会误判成「焦点离开」而重启轮播
-            modifier = Modifier.fillMaxWidth().onFocusChanged { focused = it.hasFocus },
+            modifier = Modifier
+                .fillMaxWidth()
+                .railScrollRoom(16.dp)
+                .onFocusChanged { focused = it.hasFocus },
         ) {
             items(words, key = { word -> "w-$word" }) { word ->
                 WordChip(text = word, onClick = { onPick(word) })
@@ -361,7 +393,9 @@ private fun WordChip(
             pressedContainerColor = ModaColors.AccentSoft,
             pressedContentColor = Color.White,
         ),
-        scale = CardDefaults.scale(scale = 1f, focusedScale = 1.08f, pressedScale = 1f),
+        // 同首页 tab：LazyRow 视口会裁掉子项的放大溢出，第一个词条的左边会被切平，
+        // 焦点态靠白底 + 3dp 白描边表达就够了
+        scale = CardDefaults.scale(scale = 1f, focusedScale = 1f, pressedScale = 1f),
         border = CardDefaults.border(
             border = Border.None,
             focusedBorder = Border(

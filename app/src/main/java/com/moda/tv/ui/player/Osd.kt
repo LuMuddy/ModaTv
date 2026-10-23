@@ -354,27 +354,33 @@ private fun TierPanel(tiers: List<Tier>, selected: Tier?, focusedIndex: Int) {
         tiers.forEachIndexed { index, tier ->
             val focused = index == focusedIndex
             val isCurrent = selected != null && selected.fno == tier.fno && selected.defn == tier.defn
+            // 与倍速/比例/内核/解码面板共用同一套三态配色（chipStyle）：
+            // 焦点=白底深字、选中=蓝底白字、其余半透明。面板之间各写一套是
+            // "清晰度里蓝底算焦点、倍速里蓝底算选中"的根源，用户会读反。
+            val cs = chipStyle(focused = focused, selected = isCurrent)
+            val rowShape = RoundedCornerShape(8.dp)
             Row(
                 Modifier
                     .width(IntrinsicSize.Max)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(if (focused) ItemFocusedBg else Color(0x00000000))
-                    .border(
-                        if (focused) 2.dp else 0.dp,
-                        if (focused) Color(0xFFFFFFFF) else Color(0x00000000),
-                        RoundedCornerShape(8.dp),
-                    )
+                    .clip(rowShape)
+                    .background(cs.container)
+                    .border(cs.borderWidth, cs.border, rowShape)
                     .padding(horizontal = 14.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
                     tier.displayName,
                     style = TvBody,
-                    color = ItemTextColor,
+                    color = cs.content,
                 )
                 if (isCurrent) {
                     Spacer(Modifier.width(10.dp))
-                    Text("当前", style = TvCaption, color = ItemTextColor.copy(alpha = 0.75f))
+                    Text(
+                        "当前",
+                        style = TvCaption,
+                        // 选中蓝底上用半透明白；焦点白底上必须换成深色，否则看不见
+                        color = cs.content.copy(alpha = 0.75f),
+                    )
                 }
             }
             Spacer(Modifier.height(6.dp))

@@ -17,6 +17,16 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalDensity
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -105,11 +115,38 @@ fun CopyrightNoticeDialog(
 
             // 长文案在小屏电视上会顶破弹窗高度，所以正文自己滚：
             // 标题与按钮始终可见，用户永远看得见入口和出口。
+            val bodyScroll = rememberScrollState()
+            val scope = rememberCoroutineScope()
+            // 按键回调里不是组合上下文，dp→px 必须先在组合期算好
+            val stepPx = with(LocalDensity.current) { 120.dp.toPx() }
             Column(
                 Modifier
                     .fillMaxWidth()
                     .heightIn(max = bodyMaxHeight)
-                    .verticalScroll(rememberScrollState()),
+                    .verticalScroll(bodyScroll)
+                    // 电视上没有滚动条：正文必须自己可聚焦、自己吃上下键，否则这屏文字永远读不到底
+                    // （焦点只在"我已知悉"上，按上下键什么也不会发生）
+                    .focusable()
+                    .onPreviewKeyEvent { ev ->
+                        if (ev.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                        // 只有"还能滚"时才吃键：到底之后必须把上下键交还给焦点系统，
+                        // 否则焦点被锁在正文里，永远走不到「我已知悉」——那就是键盘陷阱。
+                        when (ev.key) {
+                            Key.DirectionDown -> if (bodyScroll.canScrollForward) {
+                                scope.launch { bodyScroll.scrollBy(stepPx) }
+                                true
+                            } else {
+                                false
+                            }
+                            Key.DirectionUp -> if (bodyScroll.canScrollBackward) {
+                                scope.launch { bodyScroll.scrollBy(-stepPx) }
+                                true
+                            } else {
+                                false
+                            }
+                            else -> false
+                        }
+                    },
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 NoticeParagraphs.forEach { paragraphRes ->
@@ -119,6 +156,17 @@ fun CopyrightNoticeDialog(
                         color = ModaColors.Text,
                     )
                 }
+            }
+
+            // 正文被高度上限截断时必须说出来：电视上没有滚动条，用户只会以为"就这些"，
+            // 而版权声明恰恰是要求用户真的读过一遍才点"我已知悉"的。
+            if (bodyScroll.canScrollForward) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    stringResource(R.string.copyright_scroll_hint),
+                    style = TvCaption.copy(fontSize = 14.sp),
+                    color = ModaColors.TextDim,
+                )
             }
 
             Spacer(Modifier.height(20.dp))

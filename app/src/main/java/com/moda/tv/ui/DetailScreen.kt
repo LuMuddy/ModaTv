@@ -34,6 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -42,6 +43,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -51,6 +53,7 @@ import com.moda.tv.model.Episode
 import com.moda.tv.model.SeriesDetail
 import com.moda.tv.model.Tier
 import com.moda.tv.ui.components.ListMetrics
+import com.moda.tv.ui.components.railScrollRoom
 import com.moda.tv.ui.components.listBottomSafe
 import com.moda.tv.ui.components.ActionButton
 import com.moda.tv.ui.components.Badge
@@ -60,6 +63,7 @@ import com.moda.tv.ui.components.EpisodeChip
 import com.moda.tv.ui.components.LoadingState
 import com.moda.tv.ui.components.RemoteImage
 import com.moda.tv.ui.components.SectionTitle
+import com.moda.tv.ui.components.TvRowFocusScroll
 import androidx.tv.material3.Border
 import androidx.tv.material3.Button
 import androidx.tv.material3.ButtonDefaults
@@ -179,6 +183,9 @@ fun DetailScreen(
     // 选集轨道的滚动状态。每次进详情页都是一份新的 composition，
     // 所以「居中」每次加载都会重来一次，不会记住上一次的滚动位置
     val railState = rememberLazyListState()
+    // 选集轨道的 TV 跟焦：焦点格下标进状态，滚动按"整格"接管（见 TvRowFocusScroll）
+    var railFocusedIndex by remember { mutableIntStateOf(-1) }
+    TvRowFocusScroll(state = railState, focusedIndex = railFocusedIndex)
 
     val episodes = detail?.episodes.orEmpty()
 
@@ -377,18 +384,22 @@ fun DetailScreen(
                     LazyRow(
                         state = railState,
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        contentPadding = PaddingValues(
-                            horizontal = ListMetrics.SidePad,
-                            // 纵向 8dp 兜住聚焦放大 1.08 的溢出，否则轨道上下沿会切掉白边
-                            vertical = 8.dp,
-                        ),
-                        modifier = Modifier.fillMaxWidth(),
+                        // 纵向 8dp 兜住聚焦放大 1.08 的溢出（纵向不滚，不会被吃掉）；
+                        // 横向 SidePad 挪到视口之外：留在 contentPadding 里的话，
+                        // 按「左」回到第 1 集时这 48dp 会被滚掉，首格与页头对不齐。
+                        contentPadding = PaddingValues(vertical = 8.dp),
+                        modifier = Modifier.fillMaxWidth().railScrollRoom(ListMetrics.SidePad),
                     ) {
                         items(count = episodes.size, key = { i -> "ep-${episodes[i].vid}-$i" }) { index ->
                             val ep = episodes[index]
                             val finished = index in completedIndexes
                             // 顶部 12dp 给「已看完」勾标悬挂用（勾塞进卡片内部会压住「第 N 集」那行字）
-                            Box(Modifier.padding(top = 12.dp)) {
+                            Box(
+                                Modifier
+                                    .padding(top = 12.dp)
+                                    // 焦点落到这一格就交给 TV 跟焦规则（连按左右也不掉队）
+                                    .onFocusChanged { if (it.isFocused) railFocusedIndex = index },
+                            ) {
                                 EpisodeChip(
                                     index = ep.index,
                                     label = ep.label,

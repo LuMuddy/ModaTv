@@ -3,6 +3,7 @@ package com.moda.tv.ui
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -35,16 +36,21 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.painterResource
@@ -67,9 +73,10 @@ import com.moda.tv.ui.components.ErrorState
 import com.moda.tv.ui.components.IconActionButton
 import com.moda.tv.ui.components.ListMetrics
 import com.moda.tv.ui.components.listBottomSafe
-import com.moda.tv.ui.components.listItemInset
+import com.moda.tv.ui.components.railScrollRoom
 import com.moda.tv.ui.components.LoadingState
 import com.moda.tv.ui.components.SectionTitle
+import com.moda.tv.ui.components.TvGridFocusScroll
 import com.moda.tv.ui.components.VideoCard
 import com.moda.tv.ui.theme.ModaColors
 import com.moda.tv.ui.theme.TvBody
@@ -89,15 +96,10 @@ import kotlinx.coroutines.delay
 private const val HI_RES_PREFETCH_COUNT = 6
 
 /**
- * 推荐行卡宽度。
- *
- * 本机实测屏幕是 960x540dp（1920x1080 @320dpi）。tab 化之后顶部多了一行常驻的 tab 栏，
- * 轮播高度只能从 Cards.kt 默认的 360dp 收到 200dp，否则「工具栏 + tab 栏 + 轮播」就吃掉整屏，
- * 推荐行一张卡都露不出来。卡片同步收到 110dp：3:4 海报 147dp + 剧名一行，
- * 是「海报看得清」与「整行落在首屏内」的交点。
+ * 首页卡片宽度不再由自己定：轮播改成 5 列网格之后，列宽由 LazyVerticalGrid 按屏幕分配
+ * （960dp 宽、48dp 侧边、16dp 间距 → 每列约 160dp），卡片一律 width = null 撑满列宽。
+ * 之前那个 110dp 来自「轮播 + 一行横向卡片」的旧结构，留着只会误导下一处改动。
  */
-private val HOME_CARD_WIDTH = 110.dp
-
 
 /** 分类 tab 每行的海报数（需求 11：每行 5 个） */
 private const val GRID_COLUMNS = 5
@@ -216,7 +218,21 @@ fun HomeScreen(
     val firstRecommendFocus = remember { FocusRequester() }
     val firstGridFocus = remember { FocusRequester() }
     val tabFocus = remember { FocusRequester() }
+    // 空态 / 错误态里唯一的可点项是「重新加载」。不主动请求的话焦点会留在 tab 栏，
+    // 用户看着屏幕中央那个蓝色按钮按确认，什么也不会发生。
+    val emptyRetryFocus = remember { FocusRequester() }
     var firstFocusDone by remember { mutableStateOf(false) }
+    // 内容区是否已经拿到过焦点。
+    //
+    // 「用户自己动了 tab」必须以此为前提：冷启动时焦点会先落在 tab 栏上（数据还没到，
+    // 内容区一个可聚焦节点都没有），那一刻的 onFocusChanged 和「用户主动按到 tab 栏」
+    // 长得一模一样。旧实现把它当成用户接管、直接置位 firstFocusDone，重试循环于是退出——
+    // 数据到了之后焦点永远留在 tab 栏，第一张卡没有白框，看起来就是「首页没有选中项」。
+    var contentFocusedOnce by remember { mutableStateOf(false) }
+    val onContentFocused = {
+        contentFocusedOnce = true
+        firstFocusDone = true
+    }
 
     // 内容区第一张卡：推荐与分类都是各自网格的第 0 张
     val entryFocus: FocusRequester = if (isRecommend) firstRecommendFocus else firstGridFocus
@@ -238,6 +254,13 @@ fun HomeScreen(
             if (firstFocusDone) return@LaunchedEffect
             runCatching { entryFocus.requestFocus() }
         }
+    }
+
+    LaunchedEffect(tab, items.isEmpty(), loading, error) {
+        if (items.isNotEmpty() || loading) return@LaunchedEffect
+        withFrameNanos { }
+        withFrameNanos { }
+        runCatching { emptyRetryFocus.requestFocus() }
     }
 
     // 工具栏右半的「现在几点」：对齐到整分再更新，不需要每秒重组。
@@ -289,7 +312,7 @@ fun HomeScreen(
                 selected = tab,
                 onSelect = onSelectTab,
                 // 用户一旦自己动过 tab 栏，就说明焦点已经由他接管，别再往回抢
-                onUserFocused = { firstFocusDone = true },
+                onUserFocused = { if (contentFocusedOnce) firstFocusDone = true },
                 selectedTabFocus = tabFocus,
                 // 只有内容真的存在时才给「下」绑落点：加载/错误/空态那几屏没有可聚焦元素
                 downFocus = if (items.isEmpty()) null else entryFocus,
@@ -303,17 +326,27 @@ fun HomeScreen(
 
             Spacer(Modifier.height(12.dp))
 
-            // 内容区**不给**底部 padding：它会把「网格视口」压小，
-            // 于是最后一行滚到底时直接贴住被压小的视口边缘，连白边都画不出来。
+            // 内容区必须用 weight(1f) 吃掉"剩余"高度。
+            // 用 fillMaxSize() 是个坑：Column 给非 weight 子项的 maxHeight 是整列高度，
+            // fillMaxSize 于是拿到 540dp 全高、排在页头（约 130dp）后面，实际溢出屏幕 130dp——
+            // 网格视口比屏幕长出一截，焦点滚动以为末行"已可见"，真机上末行就被屏幕下沿切掉。
             // 尾部留白交给网格自己的 contentPadding.bottom（ListMetrics.TailPad）：
             // 那是**列表内部**的空间，滚到底时最后一项下面才会真正空出来。
-            Box(Modifier.fillMaxSize()) {
+            Box(Modifier.weight(1f).fillMaxWidth()) {
                 when {
                     // 「错误只在没有任何数据时才露脸」：有内容时请求失败必须静默——
                     // 用户看到的仍然是能用的那一屏（需求 9），再把错误糊上去没有意义。
-                    items.isEmpty() && error != null -> ErrorState(error, onRetry = onRefresh)
+                    items.isEmpty() && error != null -> ErrorState(
+                        error,
+                        onRetry = onRefresh,
+                        retryFocus = emptyRetryFocus,
+                    )
                     items.isEmpty() && loading -> LoadingState("正在拉取「${tab.title}」…")
-                    items.isEmpty() -> EmptyState("「${tab.title}」暂无内容", onRetry = onRefresh)
+                    items.isEmpty() -> EmptyState(
+                        "「${tab.title}」暂无内容",
+                        onRetry = onRefresh,
+                        retryFocus = emptyRetryFocus,
+                    )
                     isRecommend -> RecommendContent(
                         recommendItems = recommendItems,
                         // 历史流已是 updatedAt 倒序，take 前 N 条即「最近 N 条」
@@ -323,7 +356,7 @@ fun HomeScreen(
                         tabFocus = tabFocus,
                         firstCardFocus = firstRecommendFocus,
                         entryFocus = entryFocus,
-                        onContentFocused = { firstFocusDone = true },
+                        onContentFocused = onContentFocused,
                         onOpenDetail = onOpenDetail,
                         onResumeHistory = onResumeHistory,
                     )
@@ -334,8 +367,27 @@ fun HomeScreen(
                         firstCardFocus = firstGridFocus,
                         tabFocus = tabFocus,
                         entryFocus = entryFocus,
-                        onContentFocused = { firstFocusDone = true },
+                        onContentFocused = onContentFocused,
                         onOpenDetail = onOpenDetail,
+                    )
+                }
+
+                // 底边渐隐：一屏装不下一整行时，第二行必然被屏幕下沿切一半。
+                // 硬切看起来像布局没做完，一层到页底的渐变把它变成「下面还有」的暗示。
+                // 它压在最上层但不吃按键（没有 clickable/focusable），也不参与布局。
+                // 只在有内容时出现：空态/加载态不需要这层遮盖。
+                if (items.isNotEmpty()) {
+                    Box(
+                        Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .height(56.dp)
+                            .background(
+                                Brush.verticalGradient(
+                                    0f to Color.Transparent,
+                                    1f to ModaColors.Bg,
+                                )
+                            )
                     )
                 }
             }
@@ -584,20 +636,17 @@ private fun HomeTabRow(
     //
     // 焦点驱动的自动滚动由 LazyRow 自己处理：焦点移到视口外的 tab 时它会自动把它带进来。
     LazyRow(
-        modifier = modifier,
+        /**
+         * 这个 8dp 是给「聚焦放大」留的溢出空间，不是审美留白，而且必须写在**视口之外**。
+         *
+         * 写成 contentPadding 时会出事：焦点按「右」推到最后一个 tab 再按「左」回来，
+         * 这 8dp 先被滚动吃掉——第一个 tab 与工具栏左缘差 8dp，
+         * 「推荐」左侧的圆角/描边还被 LazyRow 的视口切平（真机上就是这个现象）。
+         * 外层 40dp + 这里 8dp 仍是 48dp，第一个 tab 依旧与工具栏图标左对齐。
+         */
+        modifier = modifier.railScrollRoom(8.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
-        /**
-         * 这个 8dp 是给「聚焦放大」留的溢出空间，不是审美留白。
-         *
-         * Row 默认不裁剪，换行不会出问题；LazyRow 会把内容裁剪到自己边界内。
-         * 第一个 tab 聚焦时 scale 1.06 + 3dp 描边，向左外扩约 3~4dp 就被 LazyRow 切掉，
-         * 表现出来就是「推荐」这个按钮的左边框是平的、圆角没了。
-         *
-         * 外层的 48dp 同步减到 40dp（见调用点），两者相加仍是 48dp，
-         * 视觉上第一个 tab 依旧与工具栏图标左对齐。
-         */
-        contentPadding = PaddingValues(horizontal = 8.dp),
     ) {
         items(count = HomeTab.entries.size, key = { i -> HomeTab.entries[i].name }) { index ->
             val entry = HomeTab.entries[index]
@@ -662,7 +711,11 @@ private fun TabChip(
             pressedContainerColor = ModaColors.Focus,
             pressedContentColor = ModaColors.Bg,
         ),
-        scale = CardDefaults.scale(scale = 1f, focusedScale = 1.06f, pressedScale = 1f),
+        // 不放大（focusedScale = 1f）：LazyRow 会把子项裁到自己的视口，而放大是"只改绘制
+        // 不改布局"——第一个 tab 向左溢出的那几 dp 被视口直接切掉，真机上表现为
+        // 「推荐的白框没有左边、左圆角是平的」。焦点态改由白底 + 加粗字 + 蓝下划线表达，
+        // 与 SettingRow / 设置分组卡同一套（它们也不放大，理由相同）。
+        scale = CardDefaults.scale(scale = 1f, focusedScale = 1f, pressedScale = 1f),
         border = CardDefaults.border(
             border = Border.None,
             focusedBorder = tabFocusBorder(corner),
@@ -677,7 +730,10 @@ private fun TabChip(
                 // 不如让「NBA」这种窄标题和「纪录片」这种宽标题各占自己该占的地方。
                 // 热区靠 vertical padding 撑够，遥控器在 3 米外也停得住。
                 .defaultMinSize(minHeight = 44.dp)
-                .background(if (isSelected && !focused) ModaColors.SurfaceHigh else Color.Transparent)
+                // 选中底色从 SurfaceHigh(#1F2129) 换成强调蓝的浅染：
+                // 前者压在 #0B0B0F 页底上只有约 1.35:1，3 米外等于没有，
+                // 于是「当前是哪个分类」全靠一条 3dp 下划线在撑，太单薄。
+                .background(if (isSelected && !focused) ModaColors.Accent.copy(alpha = 0.32f) else Color.Transparent)
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
@@ -692,16 +748,23 @@ private fun TabChip(
                 ),
                 color = LocalContentColor.current,
                 maxLines = 1,
+                // 下划线画在文字自己身上，宽度天然等于文字宽度。
+                // 不能用一个 fillMaxWidth 的 Box：LazyRow 的项在滚动轴上宽度无界，
+                // fillMaxWidth 会退化成 0 宽——真机上表现为「下划线整个消失」。
+                modifier = Modifier.drawBehind {
+                    if (isSelected) {
+                        val gap = 4.dp.toPx()
+                        drawRect(
+                            color = ModaColors.AccentSoft,
+                            topLeft = Offset(0f, size.height + gap),
+                            size = Size(size.width, 3.dp.toPx()),
+                        )
+                    }
+                },
             )
-            Spacer(Modifier.height(4.dp))
-            // 下划线常驻占位（未选中时透明）：否则切换时整块高度会跳一下，
-            // 下面的内容区跟着抖一帧
-            Box(
-                Modifier
-                    .width(28.dp)
-                    .height(3.dp)
-                    .background(if (isSelected) ModaColors.Accent else Color.Transparent),
-            )
+            // 下划线常驻占位（画不画由上面的 drawBehind 决定）：否则切换选中时整块高度会跳一下，
+            // 下面的内容区跟着抖一帧。高度 = 4dp 间隙 + 3dp 线。
+            Spacer(Modifier.height(7.dp))
         }
     }
 }
@@ -733,6 +796,9 @@ private fun RecommendContent(
     onResumeHistory: (LibraryEntry) -> Unit,
 ) {
     val gridState = rememberLazyGridState()
+    // 焦点所在项的下标：TV 的列表滚动只认它，见 TvGridFocusScroll
+    var focusedIndex by remember { mutableIntStateOf(-1) }
+    TvGridFocusScroll(state = gridState, focusedIndex = focusedIndex, columns = GRID_COLUMNS)
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(GRID_COLUMNS),
@@ -742,11 +808,13 @@ private fun RecommendContent(
         modifier = Modifier
             .fillMaxSize()
             .focusProperties { onEnter = { entryFocus } },
-        // 侧边对齐、尾部留底、聚焦溢出余量统一由 ListMetrics 提供。
-        // 不要再在这里各写一份数字——各页取值漂移正是「底边被裁」反复出现的原因。
-        contentPadding = ListMetrics.gridContentPadding(top = 16.dp),
+        // 顶部 12dp 必须留在 contentPadding（视口之内）：焦点滚动会把被聚焦项顶到视口边，
+        // 写在外面的留白它根本用不上，于是首行卡片聚焦放大后上沿被视口切平
+        //（"光标向下再向上，光标有一部分被吃了"就是这么来的）。
+        contentPadding = ListMetrics.gridContentPadding(top = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        // 纵向缝隙由每项自己的 10dp 余量提供（2×10=20dp），这里不再叠加
+        verticalArrangement = Arrangement.spacedBy(0.dp),
     ) {
         gridItemsIndexed(
             items = recommendItems,
@@ -765,9 +833,10 @@ private fun RecommendContent(
                 preferHiRes = prefetchCids.contains(item.cid),
                 modifier = Modifier
                     .fillMaxWidth()
-                    // 聚焦放大 1.08 的溢出必须落在项自己的布局里，
-                    // 否则会被 LazyGrid 视口裁掉（白边下沿被切平）。见 ListMetrics.ItemFocusInset
-                    .listItemInset()
+                    // 每项自带 10dp 纵向余量：聚焦放大（scale 1.06~1.08，上下各约 5~10dp）
+                    // 是纯绘制溢出，网格视口不会为它让路——首行卡片的上沿、末行的下沿
+                    // 会被切平，看起来就是"选中框缺了一条边"。余量放进项自己的布局里就不会被裁。
+                    .padding(vertical = 10.dp)
                     .then(if (index == 0) Modifier.focusRequester(firstCardFocus) else Modifier)
                     // 只有第一行按上键回 tab 栏。第二行往下若再指同一个 requester，
                     // 跨行时焦点就会被拽回第 0 张
@@ -780,7 +849,13 @@ private fun RecommendContent(
                     )
                     // 有任何一张卡拿到焦点就停掉首焦点的重试循环，
                     // 否则用户刚往右挪两格，循环又把他拽回第 0 张
-                    .onFocusChanged { state -> if (state.isFocused) onContentFocused() },
+                    .onFocusChanged { st ->
+                        if (st.isFocused) {
+                            // 交给 TV 的按行跟焦规则：它按这个下标算"整行"的上下沿
+                            focusedIndex = index
+                            onContentFocused()
+                        }
+                    },
             )
         }
 
@@ -807,8 +882,11 @@ private fun RecommendContent(
                     // 直接进播放页，不经过详情（需求 10 原话）
                     onClick = { onResumeHistory(entry) },
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .listItemInset()
+                    .fillMaxWidth()
+                    // 每项自带 10dp 纵向余量：聚焦放大（scale 1.06~1.08，上下各约 5~10dp）
+                    // 是纯绘制溢出，网格视口不会为它让路——首行卡片的上沿、末行的下沿
+                    // 会被切平，看起来就是"选中框缺了一条边"。余量放进项自己的布局里就不会被裁。
+                    .padding(vertical = 10.dp)
                         .onFocusChanged { state -> if (state.isFocused) onContentFocused() },
                 )
             }
@@ -851,6 +929,8 @@ private fun CategoryGrid(
     onOpenDetail: (String, String) -> Unit,
 ) {
     val gridState = rememberLazyGridState()
+    var focusedIndex by remember { mutableIntStateOf(-1) }
+    TvGridFocusScroll(state = gridState, focusedIndex = focusedIndex, columns = GRID_COLUMNS)
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(GRID_COLUMNS),
@@ -860,11 +940,13 @@ private fun CategoryGrid(
         modifier = Modifier
             .fillMaxSize()
             .focusProperties { onEnter = { entryFocus } },
-        // 侧边对齐、尾部留底、聚焦溢出余量统一由 ListMetrics 提供。
-        // 不要再在这里各写一份数字——各页取值漂移正是「底边被裁」反复出现的原因。
-        contentPadding = ListMetrics.gridContentPadding(top = 16.dp),
+        // 顶部 12dp 必须留在 contentPadding（视口之内）：焦点滚动会把被聚焦项顶到视口边，
+        // 写在外面的留白它根本用不上，于是首行卡片聚焦放大后上沿被视口切平
+        //（"光标向下再向上，光标有一部分被吃了"就是这么来的）。
+        contentPadding = ListMetrics.gridContentPadding(top = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        // 同推荐页：纵向缝隙由项自身的 10dp 余量提供
+        verticalArrangement = Arrangement.spacedBy(0.dp),
     ) {
         gridItemsIndexed(
             items = items,
@@ -883,9 +965,10 @@ private fun CategoryGrid(
                 preferHiRes = false,
                 modifier = Modifier
                     .fillMaxWidth()
-                    // 聚焦放大 1.08 的溢出必须落在项自己的布局里，
-                    // 否则会被 LazyGrid 视口裁掉（白边下沿被切平）。见 ListMetrics.ItemFocusInset
-                    .listItemInset()
+                    // 每项自带 10dp 纵向余量：聚焦放大（scale 1.06~1.08，上下各约 5~10dp）
+                    // 是纯绘制溢出，网格视口不会为它让路——首行卡片的上沿、末行的下沿
+                    // 会被切平，看起来就是"选中框缺了一条边"。余量放进项自己的布局里就不会被裁。
+                    .padding(vertical = 10.dp)
                     .then(if (index == 0) Modifier.focusRequester(firstCardFocus) else Modifier)
                     // 只有第一行按上键回 tab 栏。第二行往下如果再指同一个 requester，
                     // 跨行时焦点就会被拽回第 0 张。
@@ -898,7 +981,13 @@ private fun CategoryGrid(
                     )
                     // 有任何一张卡拿到焦点就停掉首焦点的重试循环，
                     // 否则用户刚往右挪两格，循环又把他拽回第 0 张
-                    .onFocusChanged { state -> if (state.isFocused) onContentFocused() },
+                    .onFocusChanged { st ->
+                        if (st.isFocused) {
+                            // 交给 TV 的按行跟焦规则：它按这个下标算"整行"的上下沿
+                            focusedIndex = index
+                            onContentFocused()
+                        }
+                    },
             )
         }
 

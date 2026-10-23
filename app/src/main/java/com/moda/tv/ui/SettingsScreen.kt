@@ -21,12 +21,16 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
@@ -94,6 +98,14 @@ fun SettingsScreen(
     // 摘要要显示当前播放设置，所以状态提在这里；子页用的是同一份（见 SettingsGroupRoute）
     val holder = rememberPlayerSettingsHolder(onUpdatePlayerSettings)
     val settings = holder.value
+    // 首焦点落在第一张分组卡上。不请求的话，从首页工具栏按进本页时焦点是空的：
+    // 上一页那个图标节点已经离开组合，屏幕上没有任何白圈，用户得先乱按一下方向键找光标。
+    val firstFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        withFrameNanos { }
+        withFrameNanos { }
+        runCatching { firstFocus.requestFocus() }
+    }
 
     Column(
         Modifier
@@ -126,14 +138,16 @@ fun SettingsScreen(
                 // 也不能换成 fillMaxSize()——那会把高度钉死成内容高度，反而没有滚动余量。
                 .weight(1f)
                 .verticalScroll(scrollState)
-                // 底部留白属于滚动内容：最后一张卡聚焦时会放大并画 3dp 描边，贴底会被裁掉
-                .padding(bottom = 40.dp),
+                // 底部留白属于滚动内容：最后一张卡聚焦时会画 3dp 描边，贴底会被裁掉；
+                // 顶部同样留一档，聚焦行不贴标题
+                .padding(top = 16.dp, bottom = 40.dp),
             // 卡片缝隙已由每张卡外侧的 RingRoom 提供（2×8dp=16dp），这里不再叠加，
             // 否则三张卡之间会比卡片内行距宽出两倍。
         ) {
             SettingsEntryCard(
                 title = stringResource(SettingsSectionId.Playback.titleRes),
                 desc = stringResource(SettingsSectionId.Playback.descRes),
+                focusRequester = firstFocus,
                 // 摘要由三个各自独立的档位文案拼成，分隔符是纯标点，不进资源表
                 summary = stringResource(settings.playerCore.labelRes) + " · " +
                     stringResource(settings.decoderMode.labelRes) + " · " +
@@ -182,6 +196,7 @@ private fun SettingsEntryCard(
     desc: String,
     summary: String,
     onClick: () -> Unit,
+    focusRequester: FocusRequester? = null,
 ) {
     var focused by remember { mutableStateOf(false) }
 
@@ -203,6 +218,7 @@ private fun SettingsEntryCard(
             onClick = onClick,
             modifier = Modifier
                 .fillMaxWidth()
+                .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
                 // 聚焦状态挂 Card 自己的 modifier：挂内层 Box 收不到焦点事件，
                 // focused 永远 false，白底白字就是这么来的
                 .onFocusChanged { focused = it.isFocused },
