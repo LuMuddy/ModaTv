@@ -24,7 +24,9 @@ files=$(git diff --cached --name-only --diff-filter=ACM \
 if [ -n "$files" ]; then
   # 2.1 凭据键后面跟了值。local.properties.example 里的空值是合法的，
   #     这四条只有被填上真实值才拦——那正是过去最可能翻车的地方。
-  hits=$(grep -nIE '(modatv\.(deviceToken|deviceFp|hotWordsAppId|hotWordsAppKey)|device_?fp|device_?token|x-auth-device|x-auth-fp)[[:space:]]*[=:][[:space:]]*[^[:space:]]' $files 2>/dev/null || true)
+  #     只认「键 = 值」这种配置形态：代码里的 `val DEVICE_TOKEN: String = BuildConfig...`
+  #     与 `.header("X-Auth-Device", ...)` 都不该被误报。
+  hits=$(grep -nIE '(modatv\.(deviceToken|deviceFp|hotWordsAppId|hotWordsAppKey)|device_?fp|device_?token|x-auth-(device|fp))[[:space:]]*=[[:space:]]*[^[:space:]]' $files 2>/dev/null || true)
   if [ -n "$hits" ]; then
     say "✗ 疑似设备凭据被写进了仓库（值必须留在本地 local.properties）："
     printf '    %s\n' $hits >&2
