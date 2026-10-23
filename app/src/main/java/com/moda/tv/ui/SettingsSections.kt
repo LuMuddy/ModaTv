@@ -337,10 +337,20 @@ internal fun PlaybackSettingsSection(holder: PlayerSettingsHolder) {
             )
 
             CyclingRow(
+                label = stringResource(R.string.settings_playback_danmaku),
+                value = onOff(settings.danmakuEnabled),
+                hint = stringResource(R.string.settings_playback_danmaku_hint),
+                modifier = Modifier.then(columnFocus.itemModifier(3)),
+                onCycle = {
+                    holder.apply(settings.copy(danmakuEnabled = !settings.danmakuEnabled))
+                },
+            )
+
+            CyclingRow(
                 label = stringResource(R.string.settings_playback_skip_intro),
                 value = onOff(settings.skipIntroEnabled),
                 hint = stringResource(R.string.settings_playback_skip_intro_hint),
-                modifier = Modifier.then(columnFocus.itemModifier(3)),
+                modifier = Modifier.then(columnFocus.itemModifier(4)),
                 onCycle = {
                     holder.apply(settings.copy(skipIntroEnabled = !settings.skipIntroEnabled))
                 },
@@ -350,7 +360,7 @@ internal fun PlaybackSettingsSection(holder: PlayerSettingsHolder) {
                 label = stringResource(R.string.settings_playback_skip_outro),
                 value = onOff(settings.skipOutroEnabled),
                 hint = stringResource(R.string.settings_playback_skip_outro_hint),
-                modifier = Modifier.then(columnFocus.itemModifier(4)),
+                modifier = Modifier.then(columnFocus.itemModifier(5)),
                 onCycle = {
                     holder.apply(settings.copy(skipOutroEnabled = !settings.skipOutroEnabled))
                 },
