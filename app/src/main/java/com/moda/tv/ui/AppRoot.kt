@@ -201,6 +201,12 @@ private fun HomeRoute(vm: TvViewModel) {
         // 刷新按钮：19 个 tab 整页重拉。与错误态重试走同一条通路，
         // 区别只在 homeError 的清理时机（refreshHome 会先把它清掉）
         onRefresh = { vm.refreshHome() },
+        // 刷新在跑的 3~4 秒里内容可能与刚才完全一样（同一分钟内时间戳都不跳），
+        // 图标自转是用户唯一能看到的「这一下按对了」
+        refreshing = vm.homeRefreshing,
+        // 刷新结果（成功/失败）浮一条提示：整页刷新成功时内容可能一模一样，
+        // 没有这句话用户判断不出按钮到底有没有生效
+        refreshNotice = vm.homeRefreshNotice,
         history = history,
         // 需求 10：点继续观看直接进播放器，不经过详情页
         onResumeHistory = vm::resumeFromHistory,

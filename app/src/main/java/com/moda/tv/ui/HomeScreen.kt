@@ -46,6 +46,7 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -75,8 +76,10 @@ import com.moda.tv.ui.theme.TvBody
 import com.moda.tv.ui.theme.TvCaption
 import com.moda.tv.ui.theme.TvTitle
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.delay
 
 /**
  * 首屏预取高清封面的卡片数。
@@ -132,6 +135,11 @@ private const val CONTINUE_WATCHING_LIMIT = 5
  * 时间也只有一条通路：[pageFetchedAt]——整页最近一次成功刷新的时刻，和 30 分钟门禁判的是同一个值。
  * 不再拿当前 tab 自己那条 HomeFeed 的 fetchedAt 当工具栏时间：那样切一个 tab 时间就跳一次，
  * 用户读不出「整页有多新」，而 30 分钟门禁判的偏偏是整页。
+ *
+ * 工具栏时间读作两截：「上次刷新 今天 08:32」是数据有多新，「现在 14:05」是此刻几点。
+ * 两者必须并排：只给一个裸时刻（旧版的 yyyy-MM-dd HH:mm）读者分不清它是「刷新的时刻」
+ * 还是「现在的时刻」，而且日期天天一样、看着像卡住的电子钟。现在两截并列，
+ * 用户一眼就能算出「这份内容已经放了 5 个多小时」，也就知道该不该按刷新。
  */
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
@@ -159,6 +167,19 @@ fun HomeScreen(
      * 默认值复用 onRetry 只是未接线时的降级（至少不会按下去空转），接线后必须传 vm::refreshHome。
      */
     onRefresh: () -> Unit = onRetry,
+    /**
+     * 整页刷新是否正在进行。只用来让刷新图标自转：一轮要 3~4 秒，
+     * 期间内容与时间戳都可能一动不动，没有这个反馈用户会以为按钮坏了。
+     */
+    refreshing: Boolean = false,
+    /**
+     * 最近一次整页刷新的结果。非 null 且 tick 变化时弹一条 2.5 秒的提示。
+     *
+     * 为什么不靠「内容变了没有」让用户自己判断：整页刷新成功时，
+     * 这一屏的内容很可能和刷新前一模一样（推荐位十分钟才换一次），
+     * 用户按完看到的还是同一屏——不弹一句「刷新完成」，他就会以为按钮又坏了。
+     */
+    refreshNotice: HomeRefreshNotice? = null,
     history: List<LibraryEntry> = emptyList(),
     /**
      * 点「继续观看」直接续播（需求 10：不经过详情页）。
@@ -219,10 +240,35 @@ fun HomeScreen(
         }
     }
 
+    // 工具栏右半的「现在几点」：对齐到整分再更新，不需要每秒重组。
+    // 只写一个 Long 状态，分钟没变时 Text 的入参不变，这一次重组几乎不花钱。
+    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            // 60_000 - (now % 60_000) 就是「离下一个整分还有多少毫秒」：
+            // 于是每一跳都落在 :00 秒，而不是从启动那一刻起错位着跳
+            delay(60_000L - (System.currentTimeMillis() % 60_000L))
+            nowMs = System.currentTimeMillis()
+        }
+    }
+
+    // 提示的生命周期归 UI：ViewModel 只负责「发出一条结果」，几时消失由这里决定。
+    // key 取 tick 而不是整条 notice：连续两次刷新失败文案完全一样，
+    // 用对象内容当 key 协程不会重启，第二句话就再也不会出现
+    var notice by remember { mutableStateOf<HomeRefreshNotice?>(null) }
+    LaunchedEffect(refreshNotice?.tick) {
+        val incoming = refreshNotice ?: return@LaunchedEffect
+        notice = incoming
+        delay(2_500L)
+        notice = null
+    }
+
     Box(Modifier.fillMaxSize().background(ModaColors.Bg)) {
         Column(Modifier.fillMaxSize()) {
             HomeToolbar(
                 fetchedAt = pageFetchedAt,
+                now = nowMs,
+                refreshing = refreshing,
                 onRefresh = onRefresh,
                 onOpenSearch = onOpenSearch,
                 onOpenHistory = onOpenHistory,
@@ -294,7 +340,37 @@ fun HomeScreen(
                 }
             }
         }
+
+        // 刷新结果提示浮在底部中央：脱离布局流，不推挤内容、不参与焦点、不放大会抢键。
+        // 一次刷新的结论只值一行字，为这一行字把整片内容顶上去再弹回来，
+        // 比不提示还难受——「页面不要重新刷新」这条要求对提示同样成立。
+        notice?.let {
+            RefreshNoticeBar(
+                notice = it,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 40.dp),
+            )
+        }
     }
+}
+
+/**
+ * 刷新结果提示条：成功用常规字色，失败用 [ModaColors.Danger]。
+ *
+ * 颜色是这里唯一的区分手段，文案必须能自己说清结果——电视上没有图标可点、
+ * 也没有悬浮查看，用户扫一眼就得知道「成没成」。
+ */
+@Composable
+private fun RefreshNoticeBar(notice: HomeRefreshNotice, modifier: Modifier = Modifier) {
+    Text(
+        text = notice.message,
+        style = TvBody.copy(fontSize = 18.sp),
+        color = if (notice.success) ModaColors.Text else ModaColors.Danger,
+        modifier = modifier
+            .background(ModaColors.SurfaceHigh, RoundedCornerShape(28.dp))
+            .padding(horizontal = 28.dp, vertical = 14.dp),
+    )
 }
 
 /**
@@ -310,6 +386,9 @@ fun HomeScreen(
 @Composable
 private fun HomeToolbar(
     fetchedAt: Long,
+    now: Long,
+    /** 整页刷新进行中：刷新图标自转，作为「按下去有反应」的唯一凭证 */
+    refreshing: Boolean,
     onRefresh: () -> Unit,
     onOpenSearch: () -> Unit,
     onOpenHistory: () -> Unit,
@@ -328,6 +407,22 @@ private fun HomeToolbar(
 ) {
     // 每个图标都要挂：焦点停在任意一个图标上按「下」都得进 tab 行第一项
     val downModifier = if (downFocus != null) Modifier.focusProperties { down = downFocus } else Modifier
+
+    // 刷新时的自转：角度在**绘制阶段**改（graphicsLayer 的 lambda 里读状态只重绘、不重组），
+    // 而不是在组合期把 Modifier 链换掉。
+    //
+    // 踩过的坑：早先把 Modifier.rotate 放进 if (refreshing) 分支，按下刷新的那一刻
+    // 工具栏的组合结构变一次，焦点从刷新图标掉到内容区第一张卡——按一次刷新，
+    // 光标被踢下去，等于刷新顺手把你赶出了工具栏。现在结构与动画都固定：
+    // 节点一直是同一个，只是它转起来。空闲时帧循环根本不启动，不白烧帧。
+    val spinAngle = remember { mutableStateOf(0f) }
+    LaunchedEffect(refreshing) {
+        while (refreshing) {
+            withFrameNanos { }
+            spinAngle.value = (spinAngle.value + 6f) % 360f
+        }
+    }
+    val refreshIconModifier = Modifier.graphicsLayer { rotationZ = spinAngle.value }
     Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
         // 品牌位：图标 + 文字。图标与桌面启动图标同一套造型，
         // 用户从桌面点进来能立刻对上号。
@@ -346,12 +441,26 @@ private fun HomeToolbar(
             color = ModaColors.Text,
         )
         Spacer(Modifier.width(20.dp))
-        // 获取时间比正文小一档、用 TextDim 退进背景：它是注脚，不是标题
-        Text(
-            text = fetchedAtLabel(fetchedAt),
-            style = TvCaption.copy(fontSize = 15.sp),
-            color = ModaColors.TextDim,
-        )
+        // 时间比正文小一档、用 TextDim 退进背景：它是注脚，不是标题。
+        // 两截并列（上次刷新 | 现在）：见 HomeScreen 顶部的说明，缺了「现在」那一截，
+        // 读者分不清这个时刻是数据的年龄还是此刻的钟点。
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = lastRefreshLabel(fetchedAt, now),
+                style = TvCaption.copy(fontSize = 15.sp),
+                color = ModaColors.TextDim,
+            )
+            Text(
+                text = " · ",
+                style = TvCaption.copy(fontSize = 15.sp),
+                color = ModaColors.TextDim,
+            )
+            Text(
+                text = "现在 " + clockLabel(now),
+                style = TvCaption.copy(fontSize = 15.sp),
+                color = ModaColors.TextDim,
+            )
+        }
         Spacer(Modifier.weight(1f))
         // 每个图标都带 contentDescription：屏幕阅读器与自动化测试靠它识别语义。
         // 工具栏只显示、不抢首焦点（首焦点由 HomeScreen 的 enter 与多帧重试交给内容区）。
@@ -360,6 +469,7 @@ private fun HomeToolbar(
             contentDescription = "刷新",
             onClick = onRefresh,
             modifier = downModifier,
+            iconModifier = refreshIconModifier,
         )
         Spacer(Modifier.width(16.dp))
         IconActionButton(
@@ -405,14 +515,37 @@ private fun HomeToolbar(
 }
 
 /**
- * 获取时间文案。
+ * 「上次刷新」文案。
  *
  * fetchedAt == 0 表示「整页还没成功刷新过」（pageFetchedAt 从未刷成功过就是 0L），
  * 必须显式判零：直接格式化会把 0 渲染成 1970-01-01 08:00，看起来像真抓到了什么。
+ *
+ * 今天/昨天用中文相对日而不是日期：这个位置一天里绝大多数时候都是「今天」，
+ * 天天挂着同一个日期只会让这一行变成一块看不出变化的背景噪声。
  */
-private fun fetchedAtLabel(fetchedAt: Long): String {
-    if (fetchedAt <= 0L) return "尚未获取"
-    return SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(fetchedAt))
+private fun lastRefreshLabel(fetchedAt: Long, now: Long): String {
+    if (fetchedAt <= 0L) return "尚未刷新"
+    val day = when {
+        isSameDay(fetchedAt, now) -> "今天 "
+        isSameDay(fetchedAt, now - DAY_MS) -> "昨天 "
+        // 更早的才退回日期，且不带年份：电视上「去年刷的」和「从没刷过」没有区别
+        else -> SimpleDateFormat("M月d日 ", Locale.getDefault()).format(Date(fetchedAt))
+    }
+    return "上次刷新 " + day + clockLabel(fetchedAt)
+}
+
+/** 时分。两处（上次刷新 / 现在）共用一份格式，避免各写一遍、日后改一处漏一处 */
+private fun clockLabel(at: Long): String =
+    SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(at))
+
+private const val DAY_MS = 24 * 60 * 60 * 1000L
+
+/** 同一「自然日」判断：按本地时区的年月日比，不能用 24 小时差量糊过去 */
+private fun isSameDay(a: Long, b: Long): Boolean {
+    val ca = Calendar.getInstance().apply { timeInMillis = a }
+    val cb = Calendar.getInstance().apply { timeInMillis = b }
+    return ca.get(Calendar.YEAR) == cb.get(Calendar.YEAR) &&
+        ca.get(Calendar.DAY_OF_YEAR) == cb.get(Calendar.DAY_OF_YEAR)
 }
 
 /** tab 卡片的焦点描边；和 Cards.kt 里的 focusBorder 同一套视觉（那个是 private 的） */

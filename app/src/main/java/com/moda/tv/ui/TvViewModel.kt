@@ -127,6 +127,18 @@ data class DetailResume(
  * 页面栈 + 各屏幕的数据装载。
  * 所有网络/IO 异常都在这里落成 error 状态：屏幕层拿不到 throw，也就不会白屏或崩溃。
  */
+/**
+ * 一次整页刷新的结果提示。
+ *
+ * [tick] 每发一条就 +1：连续两次刷新失败，文案一模一样，没有这个序号
+ * UI 会把它当成「状态没变」而不重新弹出——用户第二次就再也看不到提示了。
+ */
+data class HomeRefreshNotice(
+    val success: Boolean,
+    val message: String,
+    val tick: Int,
+)
+
 class TvViewModel(private val app: Context) : ViewModel() {
 
     private val history: HistoryStore = HistoryStoreImpl.create(app)
@@ -275,6 +287,26 @@ class TvViewModel(private val app: Context) : ViewModel() {
      */
     var homeFetchedAt by mutableStateOf(0L)
         private set
+
+    /**
+     * 是否正在整页刷新；工具栏的刷新图标靠它自转。
+     *
+     * 不能让 UI 直接读 [pageJob]?.isActive：那是普通字段，读它不触发重组，
+     * 于是用户按下刷新后屏幕上不会有任何变化——「按了没反应」就是这么来的。
+     * 一轮整页刷新在电视上要 3~4 秒，同一分钟内连点两次连时间戳都不会跳。
+     */
+    var homeRefreshing by mutableStateOf(false)
+        private set
+
+    /**
+     * 最近一次整页刷新的结果，由首页弹一条提示。
+     *
+     * 不清空、不设超时：看得见的生命周期归 UI（它自己 2.5 秒后忽略），
+     * 这样「刷新完成」这件事不会因为用户在别的页面而错过——回到首页仍能看到。
+     */
+    var homeRefreshNotice by mutableStateOf<HomeRefreshNotice?>(null)
+        private set
+    private var refreshNoticeTick = 0
 
     private val homeJobs = HashMap<HomeTab, Job>()
 
@@ -560,8 +592,13 @@ class TvViewModel(private val app: Context) : ViewModel() {
         // 放在 launch 之外同步执行：置空只是一次原子写，而放在协程体里就会和
         // 调用方后续的抓取抢先后——一旦晚一步清，刚抓回来的新数据又被抹掉、白抓一轮
         Repo.invalidateHomeCache()
+        homeRefreshing = true
         pageJob = viewModelScope.launch {
-            HomeTab.entries.forEach { loadingTabs[it] = true }
+            // 只给「本来就没内容」的 tab 置 loading。
+            // 已经有内容的那些一律不进 loading 态：整页刷新期间那一屏必须原样留着，
+            // 用户要的是「数据换成新的」，不是「页面重来一遍」——转圈、占位、列表闪一下
+            // 都是对被刷新内容的打断，而这一屏本来就还能看。
+            HomeTab.entries.forEach { loadingTabs[it] = homeFeeds[it]?.items.isNullOrEmpty() }
             // 每个 tab 的 (tab, 条目, 完成时刻)；失败或为空的 tab 条目为空，不进最终结果
             val fetched = try {
                 coroutineScope {
@@ -598,6 +635,9 @@ class TvViewModel(private val app: Context) : ViewModel() {
                 // 复位必须无条件：19 个 tab 里任何一个停在 loading 上，
                 // 用户切过去看到的就是一个永远转圈的空页
                 HomeTab.entries.forEach { loadingTabs[it] = false }
+                // 转圈图标同理，取消/异常也得停：留一个永远在转的按钮
+                // 比没有反馈更糟，用户会以为这一轮永远刷不完
+                homeRefreshing = false
             }
             val ok = fetched.filter { it.second.isNotEmpty() }
             // 整页「完成」以全部 tab 落定为界：谁先回来都不算刷新完成，
@@ -641,6 +681,14 @@ class TvViewModel(private val app: Context) : ViewModel() {
             } else {
                 homeError = null
             }
+            // 提示放在最后发：此时数据、时间戳、错误态都已经落定，
+            // 用户看到「刷新完成」的时候，屏幕上的内容确实已经是新的
+            refreshNoticeTick += 1
+            homeRefreshNotice = HomeRefreshNotice(
+                success = !keptOld,
+                message = if (keptOld) "刷新失败，已保留原有内容" else "刷新完成",
+                tick = refreshNoticeTick,
+            )
         }
     }
 

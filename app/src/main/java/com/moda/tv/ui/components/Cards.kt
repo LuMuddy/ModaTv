@@ -219,6 +219,8 @@ fun IconActionButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    /** 只作用于图标本身（例如刷新时的自转），不影响按钮的点击/焦点区域 */
+    iconModifier: Modifier = Modifier,
 ) {
     val corner = 12.dp
     IconButton(
@@ -247,7 +249,7 @@ fun IconActionButton(
         Icon(
             imageVector = icon,
             contentDescription = contentDescription,
-            modifier = Modifier.size(28.dp),
+            modifier = Modifier.size(28.dp).then(iconModifier),
             // tv-material 的 Icon 默认 tint = LocalContentColor，这里显式写一遍强调「跟内容色走」
             tint = contentColor(),
         )
