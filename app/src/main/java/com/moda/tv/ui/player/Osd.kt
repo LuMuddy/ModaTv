@@ -25,6 +25,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.moda.tv.data.local.DecoderMode
+import com.moda.tv.data.local.PlayerCore
 import com.moda.tv.data.local.PlayerSettings
 import com.moda.tv.model.Episode
 import com.moda.tv.model.Tier
@@ -48,6 +50,8 @@ enum class OsdSlot {
     Speed,
     Danmaku,
     Aspect,
+    Core,
+    Decoder,
     Intro,
     Outro;
 
@@ -62,7 +66,7 @@ enum class OsdSlot {
     val horizontalPanel: Boolean
         get() = when (this) {
             // 横向档位条：左右键与画面方向一致，就是换值
-            Speed, Aspect -> true
+            Speed, Aspect, Core, Decoder -> true
             // 横滑选集条：左右键换集号，确认键才真正切集
             Episode -> true
             // 纵向列表：导航轴是上下，左右键在这层没有语义
@@ -83,6 +87,9 @@ val OsdSlots: List<OsdSlot> = listOf(
     OsdSlot.Speed,
     OsdSlot.Danmaku,
     OsdSlot.Aspect,
+    // 内核与解码紧挨着：两者都是「换实例才生效」的开关，排查黑屏时总是一起看
+    OsdSlot.Core,
+    OsdSlot.Decoder,
     OsdSlot.Intro,
     OsdSlot.Outro,
 )
@@ -160,6 +167,16 @@ fun PlayerOsd(
     focusedDanmakuItem: Int = 0,
     aspectPanelVisible: Boolean = false,
     focusedAspectIndex: Int = 0,
+    corePanelVisible: Boolean = false,
+    focusedCoreIndex: Int = 0,
+    decoderPanelVisible: Boolean = false,
+    focusedDecoderIndex: Int = 0,
+    // 实际生效的内核：IJK 缺 so 时工厂会回退 Exo，工具栏要显示「真正在跑的那个」，
+    // 否则用户看到 IJK 却在用 ExoPlayer 解码，排查黑屏时会被这条假信息带偏
+    effectiveCore: PlayerCore = PlayerCore.Exo,
+    // 本剧实际生效的解码方式：播放页里的覆盖优先于设置页的默认值
+    effectiveDecoder: DecoderMode = DecoderMode.Hardware,
+    ijkUsable: Boolean = true,
     clockText: String = "",
     // 片头/片尾记录：按剧存、不分集，0 表示还没记录
     introMs: Long = 0L,
@@ -222,6 +239,16 @@ fun PlayerOsd(
                     AspectPanel(settings.aspectMode, focusedAspectIndex)
                     Spacer(Modifier.height(12.dp))
                 }
+                if (corePanelVisible) {
+                    // 高亮「实际在跑的那个」而不是设置里的偏好：IJK 缺 so 时工厂已回退 Exo，
+                    // 面板再把 IJK 标成当前，用户排查解码问题时会以为内核换了，其实没换
+                    CorePanel(effectiveCore, focusedCoreIndex, ijkUsable)
+                    Spacer(Modifier.height(12.dp))
+                }
+                if (decoderPanelVisible) {
+                    DecoderPanel(effectiveDecoder, focusedDecoderIndex)
+                    Spacer(Modifier.height(12.dp))
+                }
                 if (tierPanelVisible) {
                     TierPanel(tiers, selectedTier, focusedTierIndex)
                     Spacer(Modifier.height(12.dp))
@@ -234,7 +261,15 @@ fun PlayerOsd(
                     Spacer(Modifier.width(14.dp))
                     slots.forEach { slot ->
                         OsdButton(
-                            label = slotLabel(slot, selectedTier, settings, introMs, outroMs),
+                            label = slotLabel(
+                                slot,
+                                selectedTier,
+                                settings,
+                                effectiveCore,
+                                effectiveDecoder,
+                                introMs,
+                                outroMs,
+                            ),
                             focused = focusedSlot == slot,
                             // 片头/片尾不做压暗：整个工具栏只有弹幕有「关」这个状态，
                             // 给它们单独压灰会显得两块按钮是同级的异类，与其它按钮不一致
@@ -253,6 +288,8 @@ private fun slotLabel(
     slot: OsdSlot,
     tier: Tier?,
     settings: PlayerSettings,
+    effectiveCore: PlayerCore,
+    effectiveDecoder: DecoderMode,
     introMs: Long,
     outroMs: Long,
 ): String = when (slot) {
@@ -262,6 +299,9 @@ private fun slotLabel(
     OsdSlot.Speed -> settings.speedLabel
     OsdSlot.Danmaku -> "弹幕"
     OsdSlot.Aspect -> "比例"
+    // 内核用短名（ExoPlayer 九个字符会把工具栏撑开），解码直接用枚举 label
+    OsdSlot.Core -> if (effectiveCore == PlayerCore.Ijk) "IJK" else "Exo"
+    OsdSlot.Decoder -> effectiveDecoder.label
     // 有记录就只显示时间，不再重复「片头/片尾」四个字；没记录时才用文字占位
     OsdSlot.Intro -> if (introMs > 0L) formatClock(introMs) else "片头"
     OsdSlot.Outro -> if (outroMs > 0L) formatClock(outroMs) else "片尾"

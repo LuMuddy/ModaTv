@@ -225,7 +225,8 @@ internal fun PlaybackSettingsSection(holder: PlayerSettingsHolder) {
                 } else {
                     null
                 },
-                hint = "ExoPlayer 兼容性好、系统自带；IJK 打包了 ffmpeg 软解，老片与特殊编码更能播。",
+                hint = "ExoPlayer 兼容性好、系统自带；IJK 打包了 ffmpeg 软解，老片与特殊编码更能播。" +
+                    "这里是默认值，播放页里改的只作用于当前这部剧。",
                 onCycle = {
                     val entries = PlayerCore.entries
                     val i = entries.indexOf(settings.playerCore).coerceAtLeast(0)
@@ -244,7 +245,7 @@ internal fun PlaybackSettingsSection(holder: PlayerSettingsHolder) {
                     // 只有 IJK 的软解才是真正打包在 so 里的 ffmpeg。
                     "硬解省电、4K 更流畅；软解兼容性更好。注意：ExoPlayer 内核的软解只能挑" +
                         "系统自带的软件解码器，系统没带就仍走硬解；IJK 内核的软解才是内置 " +
-                        "ffmpeg 的真软解，老片、特殊编码要靠它。",
+                        "ffmpeg 的真软解，老片、特殊编码要靠它。播放页里改的只作用于当前这部剧。",
                 onCycle = {
                     val entries = DecoderMode.entries
                     val i = entries.indexOf(settings.decoderMode).coerceAtLeast(0)
