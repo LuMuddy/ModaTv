@@ -777,8 +777,8 @@ fun PlayerScreen(
             durationMs = engine.durationMs
             bufferedMs = engine.bufferedMs
 
-            // 片头/片尾的比例计算必须等到片长就绪。
-            // duration 一开始是 0，此时算 8%/6% 只会得到 0；更糟的是把这次计算记成
+            // 片头/片尾的有效值都依赖片长（可信性判定要按片长比例），
+            // duration 一开始是 0 时一律按「没记录」处理；若把这次空算记成
             // 「已经判定过」，片长真正到了也不会再跳一次。所以整段都放在这个 if 里。
             if (durationMs > 0L) {
                 // 片头先算，因为它还要给片尾当参照（片尾不能压在片头 MIN_GAP_MS 以内）。

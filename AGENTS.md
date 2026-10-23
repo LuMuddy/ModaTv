@@ -72,7 +72,7 @@ ui/*Screen.kt ──▶ TvViewModel ──▶ Repo ──▶ Api / CarouselSourc
 
 - 片头片尾的判定全部是 `IntroOutroRules` 里的**纯函数**（无 Context / DataStore / 协程），
   可以在 JVM 里直接验证边界。改阈值之前先读那里每条常量上的说明：
-  1% 误触线、8%/6% 兜底、90s 片头封顶、5 分钟以下不兜底，每一条都对应一个真实故障。
+  1% 误触线、10% 上限线、60s 片头片尾最小间隔，每一条都对应一个真实故障；没有记录就不跳，不存在无记录兜底。
 - 完成线是片长 95%（`COMPLETE_PERCENT`），**只有 `TvViewModel.markCompleted` 一个入口**。
   已看完的条目从历史移出、进 `moda_completed`，粒度是 `(cid, episodeIndex)` 不是 cid。
 
