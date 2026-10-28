@@ -11,6 +11,10 @@
 
 ## 界面
 
+| 扫码授权门（未授权时全应用唯一的界面：手机微信扫一扫并确认登录，图中二维码已打码） |
+| --- |
+| ![扫码授权门](docs/screenshots/auth_gate.webp) |
+
 | 首页（19 个分类 tab，推荐 tab 末尾接「继续观看」） | 详情（续播按钮 + 单行选集轨道 + 已看完勾标） |
 | --- | --- |
 | ![首页](docs/screenshots/home.webp) | ![详情](docs/screenshots/detail.webp) |
@@ -27,7 +31,7 @@
 | --- | --- |
 | ![历史](docs/screenshots/history.webp) | ![已看完](docs/screenshots/completed.webp) |
 
-截图取自 1920×1080 的 Android TV 模拟器，覆盖全部八个页面。
+截图取自 1920×1080 的 Android TV 模拟器，覆盖扫码授权门与全部八个页面。
 
 ---
 
@@ -121,9 +125,9 @@
   （历史那边删的是整部剧）。清除播放记录**不**联动清已完成，两者是不同语义的数据
 
 **设置**
-- 菜单 + 三个子页：播放设置（内核 / 解码 / 默认倍速 / 自动跳片头片尾）、
-  网络与数据（授权码、恢复默认、数据清理）、关于（版本 / 构建号 / Android 版本 /
-  分辨率，末行是版权声明入口）
+- 菜单 + 三个子页：播放设置（内核 / 解码 / 默认倍速 / 弹幕开关）、
+  网络与数据（登录账号、五项数据清理）、关于（应用名称 / 版本号 / 构建号 / Android 版本 /
+  分辨率 +「检查更新」+ 末行版权声明入口）
 - 菜单页只留三张「进去改东西」的分组卡：版权声明是一次性查看，不占菜单位，混进菜单会让
   「能改的」和「只能看的」两件事塌成一层
 - 内核 / 解码的说明里写清了「这里是所有剧的默认值，播放页里改的只作用于当前这部剧」
@@ -133,8 +137,22 @@
 - 数据层不再产出文案：`Repo` / `Api` / `PlayerEngine` 只抛 `AppError` / `PlayerError`，
   唯一翻译点是 `ui/components/ErrorText.kt`；播放内核、解码方式、弹幕字号 / 区域只持有
   `@param:StringRes` 资源 id，由 UI 层解析（枚举落盘仍是 `enum.name`，改文案不会让旧数据失联）
-- 版权声明：「关于」子页最后一行的常驻入口，也是该页**唯一可聚焦的一行**——进页即把首焦点
-  给它，下键不会在五行只读信息之间空转；每次版本升级后自动弹一次（判定按 `versionCode`，不用布尔开关）
+- 版权声明：「关于」子页最后一行的常驻入口（该页只有两行可聚焦：上面那行「检查更新」与它），
+  每次版本升级后自动弹一次（判定按 `versionCode`，不用布尔开关）；首焦点给「检查更新」，
+  下键不在五行只读信息之间空转
+
+**应用内更新**
+- 两条入口、一套状态机：应用启动时自动查一次，「关于」子页的「检查更新」行手动再查
+  （同一时刻只允许一个检查在飞，连点不会堆请求）
+- 版本强弱是 `VersionRules` 里的纯函数：按 `.` / `-` / `+` 切段取数字前缀，
+  `1.0.0` 与 `1.0.0-beta` 判相等——本仓库从不发预发布版，一次误打的 tag 不该让所有人
+  永远收不到更新提示
+- 检查失败一律静默落成「已是最新」，不弹错误框：更新是附属功能，判不出就别说，起播和首页都不等它
+- 发现新版弹窗：立即更新 / 以后再说 / 忽略此版本。忽略落的是**版本号**而不是布尔值
+  （`moda_update_check`），装上新版后判断自然失效，不需要任何「清标记」逻辑
+- APK 直链由版本号拼（CI 把 asset 固定命名成 `ModaTv-<版本>.apk`，少一次 API 往返），
+  下载先写 `.tmp` 再改名，落 `cache/update/`，经 FileProvider 交给系统安装器；
+  没有「安装未知应用」权限时引导去系统设置，而不是让人一遍遍重试下载
 
 ---
 
@@ -144,15 +162,16 @@
 | --- | --- |
 | Kotlin | 2.2.20（Compose Compiler Plugin） |
 | Android Gradle Plugin | 8.9.3 |
-| Gradle | 8.11.1 |
+| Gradle | 8.14.5 |
 | compileSdk / targetSdk / minSdk | 35 / 34 / 23 |
 | Java / Desugaring | 17 / desugar_jdk_libs 2.1.2 |
 | Compose BOM | 2025.12.01 |
 | media3 (ExoPlayer / HLS / UI / OkHttp) | 1.4.1 |
 | androidx.tv:tv-material | 1.0.0 |
 | IJK 内核 | xyz.doikki.android.dkplayer:player-ijk 3.3.7（native 按 ABI 裁剪到 arm64-v8a / armeabi-v7a） |
-| OkHttp | 4.12.0 |
+| OkHttp | 4.12.0（+ logging-interceptor，仅 debug 包的请求日志） |
 | DataStore Preferences | 1.1.7 |
+| ZXing core | 3.5.3（只生成二维码矩阵，不引 zxing-android-embedded：扫码与相机在手机微信那一侧） |
 
 依赖全部显式写在 `app/build.gradle.kts`，未使用 version catalog。
 
@@ -189,26 +208,35 @@ minSdk 23 覆盖大多数电视盒子；Android TV / Google TV 模拟器可直�
 所有业务请求都发往一个**写死的后端代理地址**：它是代码常量 `Api.BASE`（见 `data/Api.kt`），
 设置页不提供地址输入，也不需要探活校验——地址不是可配置项。
 
-凭据是**授权码换回来的 token**，不是从构建配置里读出来的：
+凭据是**微信扫码换回来的账号会话**，不是从构建配置里读出来的：
 
-- 首次使用只在「设置 → 网络与数据 → 授权码」里用遥控器手动填一次 8 位授权码，
-  App 拿它去后端兑换一个 token，连同到期 / 绑定信息存进本地 DataStore，之后所有请求都用这个 token，
-  不需要再填；
-- 授权码是一次性兑换券：用过即废，也可以被管理员吊销；token 一旦被后台判死（HTTP 401 或
-  `auth_device` 回 `authorized=false`），客户端自动作废本地会话、清掉内存令牌并回到首页，
-  停在授权门上等重新填码——不需要任何手动「清除授权」，历史 / 收藏 / 播放记录也不受影响；
-- 未授权（本地没有 token）时，依赖后端的页面显示未授权提示，历史 / 收藏 / 设置照常可用；
+- 启动时的授权门自动显示一张微信登录二维码，提示用户用手机微信「扫一扫」：
+  二维码内容固定为 `https://open.weixin.qq.com/connect/confirm?uuid=<uuid>`，`<uuid>` 由后端下发，
+  客户端只负责拼串与渲染——矩阵由 zxing 在本地画，相机和扫码在手机微信那一侧，电视端不申请相机权限；
+- 扫码并在手机上确认后，后端回一个**账号会话令牌**；应用把它连同到期 / 绑定信息落盘为「已授权」，
+  之后所有请求统一带账号会话头 `X-Auth-Session`，不需要再扫第二次；
+- 没装微信、或手机不在手边时没有旁路可走：授权门只认微信扫码，授权码不是第二条入口；
+- 账号在后台没被激活时后端回 `need_code`：电视端就地提示输入授权码，提交后调后端的
+  `login_activate` 激活账号，再回到已授权。**授权码不能单独启动登录**——它只跟在一次扫码会话之后，
+  没有正在进行的扫码就没有输入入口；
+- 会话一旦被后台判死（HTTP 401 或授权状态回 `authorized=false`），客户端自动作废本地会话、
+  清掉内存令牌并回到首页，停在授权门上等下一次扫码——不需要任何手动「清除授权」，
+  历史 / 收藏 / 播放记录也不受影响；
+- 未授权（本地没有会话）时，依赖后端的页面显示未授权提示，历史 / 收藏 / 设置照常可用；
   客户端不会带着空凭据去请求后端。
 
 接口契约（请求路径、动作名、请求头、响应包装）**不随仓库发布**——需要自建后端时按自己的
 服务实现对接，仓库里只保留调用方。
 
-> 🔐 后端地址是代码常量，热词接口凭据不进仓库：它写在 `local.properties`（已 gitignore），
-> 构建期由 `app/build.gradle.kts` 注入成 `BuildConfig`。首次检出请复制
-> `local.properties.example` 为 `local.properties` 并填入自己的热词凭据；缺省为空串，
-> 热词那一屏静默降级。设备 token 与设备指纹都是运行时值，任何文件里都没有。
-> 自建后端时优先使用 HTTPS。`
-`
+> 🔐 后端地址是代码常量，热词接口凭据也是：那对 appID / appKey 是腾讯热词接口的公共共享凭据，
+> 随每个 APK 一起发出去、抓包就能看到，所以直接写死在 `data/Repo.kt` 里，不占构建配置。
+> 真正需要保密的是签名密钥，它只写在 `local.properties`（已 gitignore）：
+> 首次检出在 `local.properties` 里补四行签名键（`modatv.keystoreFile` / `modatv.keystorePassword` /
+> `modatv.keyAlias` / `modatv.keyPassword`，密钥文件本身也在 `.gitignore` 里），
+> 不填也能编，只是出不了能装的 release 包；
+> 账号会话令牌与设备指纹都是运行时值，任何文件里都没有。
+> 自建后端时优先使用 HTTPS。
+
 ---
 
 ## 项目结构
@@ -226,25 +254,33 @@ app/src/main/java/com/moda/tv/
 │                           AppError.kt：结构化错误码 AppError / PlayerError（不含界面文案）
 ├── data/
 │   ├── Api.kt              后端 HTTP 调用，失败一律落成 AppError
-│   ├── Auth.kt             授权码兑换 token / 刷新授权状态
+│   ├── ApiLog.kt           接口请求日志（仅 debug 包；只挂发往后端的请求，视频 / APK 直链不进去）
+│   ├── Auth.kt             微信扫码登录 / 账号未激活时补授权码 / 刷新授权状态
 │   ├── Repo.kt             业务门面：首页推荐/分类流、详情、播放计划、弹幕、热词、档位黑名单
 │   ├── Parser.kt           接口 JSON → 模型的解析
 │   ├── CarouselSource.kt   v.qq.com 首页推荐位 → cid 列表
 │   ├── ChannelSource.kt    v.qq.com 频道页 → 19 个分类的内容
+│   ├── UpdateSource.kt     GitHub Releases atom feed → 最新版本号与更新说明
+│   ├── UpdateDownloader.kt 更新包下载：先写 .tmp 再改名，断在半路不会留下半个 APK
 │   ├── FileName.kt         下载文件名清洗
-│   └── local/              DataStore 存储（授权会话 + 按剧的内核 / 解码覆盖）+ 本机指纹 + 片头片尾纯规则
+│   └── local/              DataStore 存储（授权会话 + 按剧的内核 / 解码覆盖 + 忽略的版本号）
+│                           + 本机指纹 + 片头片尾 / 版本强弱两组纯规则
 └── ui/
     ├── AppRoot.kt          路由栈渲染 + 退出确认 + 版权声明弹窗
     ├── Destinations.kt     手写路由（不引 navigation-compose）+ 设置分组枚举
     ├── TvViewModel.kt      页面栈 + 各屏数据装载 + 播放器装配 + 完成结算
     ├── HomeScreen.kt       工具栏 + 19 个 tab + 网格 + 继续观看行
     ├── DetailScreen.kt     详情页头 + 单行选集轨道（有记录时居中）+ 已看完勾标
+    ├── AuthGateScreen.kt   授权门：微信扫码登录 + 账号未激活时补授权码（未授权时全应用唯一界面）
     ├── *Screen.kt          Search / Player / History / Favorites / Completed / Settings
     ├── SettingsSections.kt 设置三个子页的内容
-    ├── components/         卡片、通用状态、最小 OkHttp 图片加载器（不引 Coil）
+    ├── UpdateDialog.kt     应用内更新弹窗（下载进度 / 安装 / 忽略此版本）
+    ├── components/         卡片、通用状态、二维码绘制（zxing 只画矩阵，见 QrCode.kt）、
+    │                       最小 OkHttp 图片加载器（不引 Coil）
     │                       ErrorText.kt：错误码 → 界面文案的唯一翻译点
     ├── player/             OSD、选集 / 倍速 / 弹幕 / 画面比例面板、内核与解码档位条
     │                       （CorePanel）、Canvas 弹幕层、内核抽象
+    ├── update/             系统安装器交接：FileProvider 授权 +「安装未知应用」权限引导
     └── theme/              颜色与字阶
 ```
 
@@ -264,10 +300,11 @@ app/src/main/java/com/moda/tv/
 | `moda_search_history` | 搜索历史 |
 | `moda_home_cache` | 首页每 tab 的快照 + 上次整页刷新时刻 |
 | `moda_intro_outro` | 每部剧的片头 / 片尾记录点 |
-| `moda_player_settings` | 全局默认值：内核、解码、默认倍速、弹幕开关/字号/区域/边距、画面比例、跳片头片尾开关 |
+| `moda_player_settings` | 全局默认值：内核、解码、默认倍速、弹幕开关/字号/区域/边距、画面比例 |
 | `moda_playback_override` | 每部剧在播放页单独设过的内核 / 解码（按 `cid`，最多 60 条 LRU；与默认值相同即删键；删历史 / 清空历史时连带清理） |
-| `moda_auth_session` | 授权会话：授权码换回来的 token + 到期 / 绑定信息（键缺失 = 未授权） |
+| `moda_auth_session` | 授权会话：微信扫码换回来的账号会话令牌 + 到期 / 绑定信息（键缺失 = 未授权） |
 | `moda_copyright_notice` | 已确认版权声明的 `versionCode` |
+| `moda_update_check` | 被「忽略此版本」跳过的版本号（键缺失 = 从没忽略过） |
 
 ---
 
@@ -275,11 +312,16 @@ app/src/main/java/com/moda/tv/
 
 - 依赖第三方后端与 v.qq.com 的页面结构，腾讯侧改版会导致某个分类 tab 为空
   （没有搜索兜底可退，这是有意的取舍：宁可空，也不拿别处的数据冒充首页）。
-- token 有有效期（连同绑定信息存在本地）；失效后自动回到授权门等重新授权，
-  授权码一次性、可被管理员吊销，吊销后同样要重新填一次授权码。
+- 账号会话有有效期（连同绑定信息存在本地）；失效或账号被后台停用后自动回到授权门，
+  等下一次微信扫码——授权门没有「重新填一次码」这条路。
+- 授权门只有微信扫码一条路：电视端不提供相机，没装微信或手机不在手边时无法完成授权；
+  授权码只在一次扫码之后、账号被判为未激活时才会被问到，不能脱离扫码单独登录。
 - IJK 只打包了 `arm64-v8a` / `armeabi-v7a`，x86 模拟器上不具备 IJK 内核（ExoPlayer 不受影响）。
 - 界面语言固定中文，不跟随系统语言：系统语言不是中文时，界面仍然是中文。
-- 未配置单元测试与持续集成，验证方式为真机/模拟器手动走查。
+- 应用内更新依赖 GitHub Releases：到不了 github.com 时自动检查静默当作「已是最新」，
+  装包还需要系统给本应用开「安装未知应用」权限（客户端会引导去系统设置）。
+- 没有单元测试；CI（`.github/workflows/android-release.yml`）只做一件事：推 `v*` 标签时
+  打签名 APK 发到 Release，它不跑测试——**CI 绿了不代表功能没问题**，验收仍靠真机 / 模拟器手动走查。
 
 ## 贡献
 
