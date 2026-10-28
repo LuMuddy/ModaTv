@@ -18,7 +18,11 @@ jobs:
   apk:
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 是给下面的「生成发版说明」用的：要拿上一个 tag 做比较基准，
+      # 浅克隆（默认 depth=1）里既没有历史也没有 tag，git log 会比不出任何东西。
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # AGP 8.9 要求 JDK 17；ubuntu-latest 自带的 JDK 版本会变，显式钉住。
       - uses: actions/setup-java@v4
@@ -136,6 +140,35 @@ jobs:
           path: app/build/outputs/apk/release/ModaTv*.apk
           if-no-files-found: error
 
+      # 不用 action 的 generate_release_notes：它只列**合并的 PR**，而这个仓库是直接
+      # push 到 master、没有 PR，所以生成出来只剩一行 "Full Changelog"，等于没有说明
+      # （v1.0.2 就是这样）。改成自己从上一个 tag 起列提交标题。
+      # 只写纯文本、不写 markdown 标题和链接：同一份正文既要显示在 Release 页面，
+      # 也要经 UpdateSource.stripHtml 显示在电视的更新弹窗里，带 # 和 [](url) 会很怪。
+      - name: 生成发版说明
+        if: github.ref_type == 'tag'
+        run: |
+          set -euo pipefail
+          PREV="$(git tag --sort=-creatordate | grep -vx "$GITHUB_REF_NAME" | head -n 1 || true)"
+          if [ -n "$PREV" ]; then
+            RANGE="$PREV..$GITHUB_SHA"
+            FOOT="完整对比：https://github.com/$GITHUB_REPOSITORY/compare/${PREV}...${GITHUB_REF_NAME}"
+          else
+            # 没有上一个 tag（比如被删了）就只能列最近这些提交，别把整部历史倒出来
+            RANGE="$GITHUB_SHA"
+            FOOT="全部提交：https://github.com/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME"
+          fi
+          {
+            echo "$GITHUB_REF_NAME"
+            echo
+            # ci / docs / style / test 是维护者视角的噪音，用户只关心能用上什么
+            git log --no-merges --max-count=30 --pretty='- %s' "$RANGE" \
+              | grep -Ev '^- (ci|docs|style|test)(\(|:)' || true
+            echo
+            echo "$FOOT"
+          } > RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
       - name: 发布到 GitHub Release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
@@ -143,5 +176,5 @@ jobs:
           # 名字必须是 tag 本身：客户端从 atom 的 <title> 里剥掉前导 v 得到版本号，
           # 不写 name 就依赖 action 的默认值，默认值变了客户端会静默读不到。
           name: ${{ github.ref_name }}
+          body_path: RELEASE_NOTES.md
           files: app/build/outputs/apk/release/ModaTv*.apk
-          generate_release_notes: true
