@@ -17,8 +17,34 @@ fun secret(key: String): String = localSecrets.getProperty(key).orEmpty()
 
 // 发版时 CI 从 git tag 推导，用 -Pmodatv.versionName / -Pmodatv.versionCode 覆盖。
 // 先算成变量：产物文件名也要拿版本号，只写在 defaultConfig 里就取不到了。
-val appVersionName = (project.findProperty("modatv.versionName") as String?) ?: "1.0.1"
-val appVersionCode = (project.findProperty("modatv.versionCode") as String?)?.toIntOrNull() ?: 10001
+//
+// 本地不带 -P 构建时不再写死常量，改为从仓库里最新的 tag 推：版本名取该 tag，
+// versionCode 取该 tag 的编码 +1。写死常量时每发一版就落后一版，而本地包与线上包
+// versionCode 一旦相等或更低，手机上装着线上包时就是降级安装、系统直接拒绝，
+// 必须先卸载旧包——这个坑会随着每次发版复发，所以让推导自己跟上 tag。
+// 发版产物一律由 CI 的 -P 覆盖，这里的推导怎么算都不影响线上包。
+fun encodeVersionCode(name: String): Int? {
+    val parts = name.split(".")
+    if (parts.size != 3) return null
+    val nums = parts.map { it.toIntOrNull() ?: return null }
+    // 每段必须小于 100，否则串段（1.0.100 与 1.1.0 撞号）
+    if (nums.any { it !in 0..99 }) return null
+    return nums[0] * 10000 + nums[1] * 100 + nums[2]
+}
+
+// 拿不到 tag（源码压缩包、浅克隆里没有 tag）时静默退回下面的兜底常量，不让构建失败。
+val gitTagVersion: String? = runCatching {
+    providers.exec {
+        commandLine("git", "describe", "--tags", "--abbrev=0")
+        workingDir = rootProject.projectDir
+        isIgnoreExitValue = true
+    }.standardOutput.asText.get().trim().removePrefix("v")
+}.getOrNull()?.takeIf { encodeVersionCode(it) != null }
+
+val appVersionName = (project.findProperty("modatv.versionName") as String?) ?: gitTagVersion ?: "1.0.2"
+val appVersionCode = (project.findProperty("modatv.versionCode") as String?)?.toIntOrNull()
+    ?: gitTagVersion?.let { encodeVersionCode(it) }?.plus(1)
+    ?: 10003
 
 android {
     namespace = "com.moda.tv"
