@@ -304,9 +304,6 @@ fun PlayerOsd(
                                 outroMs,
                             ),
                             focused = focusedSlot == slot,
-                            // 片头/片尾不做压暗：整个工具栏只有弹幕有「关」这个状态，
-                            // 给它们单独压灰会显得两块按钮是同级的异类，与其它按钮不一致
-                            muted = slot == OsdSlot.Danmaku && !settings.danmakuEnabled,
                         )
                         Spacer(Modifier.width(6.dp))
                     }
@@ -359,7 +356,7 @@ private fun slotLabel(
  * 现在蓝只留给"选中/生效"，焦点统一由白描边表达（R5）。
  */
 @Composable
-private fun OsdButton(label: String, focused: Boolean, muted: Boolean = false) {
+private fun OsdButton(label: String, focused: Boolean) {
     val shape = RoundedCornerShape(10.dp)
     Box(
         Modifier
@@ -372,12 +369,9 @@ private fun OsdButton(label: String, focused: Boolean, muted: Boolean = false) {
             )
             .padding(horizontal = 14.dp, vertical = 10.dp)
     ) {
-        Text(
-            label,
-            style = TvBody,
-            // 弹幕关闭时压暗，只靠亮度区分开关态，不额外占字
-            color = if (muted && !focused) Color(0xFF8A8F9C) else ItemTextColor,
-        )
+        // 开关态不靠压暗表达：同一排按钮里只有一个灰的，读起来像「不可用」，
+        // 而弹幕的真实状态已经写在弹幕面板里（开 / 关）
+        Text(label, style = TvBody, color = ItemTextColor)
     }
 }
 

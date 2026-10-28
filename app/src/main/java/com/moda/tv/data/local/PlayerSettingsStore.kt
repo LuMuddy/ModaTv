@@ -107,7 +107,8 @@ enum class DecoderMode(@param:StringRes val labelRes: Int) {
  */
 data class PlayerSettings(
     val speed: Float = 1.0f,
-    val danmakuEnabled: Boolean = false,
+    // 默认开：弹幕是这个播放器的主要看点之一，默认关等于用户每次都要先去 OSD 打开一次
+    val danmakuEnabled: Boolean = true,
     val danmakuSizeSp: Float = 22f,
     val danmakuRegion: DanmakuRegion = DanmakuRegion.FullScreen,
     val danmakuTopPercent: Float = 0f,
@@ -121,8 +122,6 @@ data class PlayerSettings(
      * 合法档位与 [PlayerSpeedOptions] 同一份，读回时用 minByOrNull 夹到最近档。
      */
     val defaultSpeed: Float = 1.0f,
-    val skipIntroEnabled: Boolean = true,
-    val skipOutroEnabled: Boolean = true,
 ) {
     /** 弹幕可绘制区域从屏幕顶部让出的比例 */
     val topRatio: Float
@@ -164,7 +163,7 @@ private val Context.playerSettingsDataStore: DataStore<Preferences> by
 
 /**
  * 键与默认值：
- * playback_speed = 1.0 / danmaku_enabled = false / danmaku_font_size_sp = 22
+ * playback_speed = 1.0 / danmaku_enabled = true / danmaku_font_size_sp = 22
  * danmaku_region = FullScreen / danmaku_top_percent = 0 / danmaku_bottom_percent = 0
  * aspect_mode = Fit
  */
@@ -182,8 +181,6 @@ private object Keys {
     val PLAYER_CORE = stringPreferencesKey("player_core")
     val DECODER_MODE = stringPreferencesKey("decoder_mode")
     val DEFAULT_SPEED = floatPreferencesKey("default_speed")
-    val SKIP_INTRO = booleanPreferencesKey("skip_intro_enabled")
-    val SKIP_OUTRO = booleanPreferencesKey("skip_outro_enabled")
 }
 
 object PlayerSettingsStoreImpl {
@@ -220,8 +217,6 @@ private class DataStorePlayerSettingsStore(
             prefs[Keys.PLAYER_CORE] = settings.playerCore.name
             prefs[Keys.DECODER_MODE] = settings.decoderMode.name
             prefs[Keys.DEFAULT_SPEED] = settings.defaultSpeed
-            prefs[Keys.SKIP_INTRO] = settings.skipIntroEnabled
-            prefs[Keys.SKIP_OUTRO] = settings.skipOutroEnabled
         }
     }
 }
@@ -233,7 +228,7 @@ private fun Preferences.toSettings(): PlayerSettings {
     val regionName = this[Keys.DANMAKU_REGION]
     return PlayerSettings(
         speed = PlayerSpeedOptions.minByOrNull { kotlin.math.abs(it.value - speed) }?.value ?: 1.0f,
-        danmakuEnabled = this[Keys.DANMAKU_ENABLED] ?: false,
+        danmakuEnabled = this[Keys.DANMAKU_ENABLED] ?: true,
         danmakuSizeSp = DanmakuSizeOptions.minByOrNull { kotlin.math.abs(it.sizeSp - size) }?.sizeSp ?: 22f,
         danmakuRegion = DanmakuRegion.entries.firstOrNull { it.name == regionName }
             ?: DanmakuRegion.FullScreen,
@@ -251,7 +246,5 @@ private fun Preferences.toSettings(): PlayerSettings {
         defaultSpeed = PlayerSpeedOptions
             .minByOrNull { kotlin.math.abs(it.value - (this[Keys.DEFAULT_SPEED] ?: 1.0f)) }
             ?.value ?: 1.0f,
-        skipIntroEnabled = this[Keys.SKIP_INTRO] ?: true,
-        skipOutroEnabled = this[Keys.SKIP_OUTRO] ?: true,
     )
 }

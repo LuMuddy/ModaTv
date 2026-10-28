@@ -800,7 +800,7 @@ fun PlayerScreen(
                     durationMs,
                 )
 
-                if (!introDone && settings.skipIntroEnabled) {
+                if (!introDone) {
                     introDone = true
                     // 「从未播过」的判据见 HasPlayedThresholdMs / hasPlayedBefore 的注释
                     if (IntroOutroRules.shouldSkipIntro(
@@ -815,14 +815,15 @@ fun PlayerScreen(
                 }
 
                 // 片尾：到点就算这一集看完，交给外部连播下一集。
-                // 受 skipOutroEnabled 控制的是「跳」，不是「算看完」——
-                // 播到 95% 就该算看完，和用户想不想跳片尾无关。
+                // 没有开关——跳不跳只由「有没有可信片尾记录」决定：片尾记到完成线（95%）
+                // 之后 effectiveOutroWithIntro 就返回 0，等于关掉了跳片尾；
+                // 而「算看完」始终由下面的 95% 那条路负责，与跳不跳无关。
                 val outro = IntroOutroRules.effectiveOutroWithIntro(
                     recordedMs = liveMarks.outroMs,
                     durationMs = durationMs,
                     introMs = effectiveIntro,
                 )
-                if (settings.skipOutroEnabled && outro > 0L && !outroFired &&
+                if (outro > 0L && !outroFired &&
                     positionMs >= outro - IntroOutroRules.INTRO_SKIP_TOLERANCE_MS
                 ) {
                     outroFired = true
