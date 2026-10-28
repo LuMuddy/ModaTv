@@ -66,7 +66,7 @@ import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
 import com.moda.tv.BuildConfig
 import com.moda.tv.R
-import com.moda.tv.data.SaveOutcome
+import com.moda.tv.data.local.AuthSession
 import com.moda.tv.data.local.DecoderMode
 import com.moda.tv.data.local.PlayerCore
 import com.moda.tv.data.local.PlayerSettings
@@ -87,7 +87,7 @@ import kotlinx.coroutines.launch
 /**
  * 子页的一条操作反馈：成功用普通色，失败用 Danger，肉眼可分辨。
  *
- * 失败有两种来源：[text] 是实现方已经落好资源的成品文案（代理网址校验/探活的具体原因），
+ * 失败有两种来源：[text] 是实现方已经落好资源的成品文案（授权码兑换的具体原因），
  * [error] 则是一个逃出回调的异常——异常原文只进日志，这里只留错误码，
  * 文案到渲染那一刻再由 [appErrorText] 按当前语言取（提前拼成字符串等于把语言烤死）。
  */
@@ -103,7 +103,7 @@ internal data class Notice(
  *
  * 从前这里直接把 `e.message` 当提示：那是给排错看的原文（Java 英文、类名与参数都会漏出去），
  * 与「错误码 → 文案只有 ErrorText 一个出口」冲突，而且在英文系统上照样是中英混排。
- * [code] 由调用点给：探活/保存失败与本地存储故障用户能做的事不同，
+ * [code] 由调用点给：授权码兑换失败与本地存储故障用户能做的事不同，
  * 前者是「再试一次」，后者是「存储坏了」（AppError.Storage）。全部落成 Unknown
  * 会把后者说成「加载失败，请稍后重试」——一句指向网络的错话。
  */
@@ -372,17 +372,33 @@ internal fun PlaybackSettingsSection(holder: PlayerSettingsHolder) {
 // ==================== 二、网络与数据 ====================
 
 /**
- * 网络与数据子页：代理网址（含编辑态）/ 扫码配置 / 恢复默认地址 / 三项清空。
+ * 授权状态只有一句话：已授权 / 未授权。
  *
- * 屏幕自身不碰网络：校验、探活、落盘全部由回调的实现方（SettingsGroupRoute）负责，
- * 这里只把结果渲染出来。
+ * 到期时间、绑定 IP、用的是哪张授权码都刻意不显示：它们只解释「这份凭据长什么样」，
+ * 不决定用户能做什么；过期与否也不再需要用户自己盯——后台判死时客户端会自己回到授权门。
+ * 屏幕上多一行术语，就多一次「这数字什么意思」的追问。
+ */
+@Composable
+internal fun authStatusText(session: AuthSession?): String = if (session == null) {
+    stringResource(R.string.settings_auth_unauthorized)
+} else {
+    stringResource(R.string.settings_auth_authorized)
+}
+
+/**
+ * 网络与数据子页：授权码（含编辑态）/ 授权状态 / 扫码输入 / 三项清空。
+ *
+ * 屏幕自身不碰网络也不碰凭据：兑换与落盘全在回调的实现方（SettingsGroupRoute → TvViewModel.authorize）
+ * 手里，这里只把结果渲染出来。授权成功后 [session] 会从上层回灌，
+ * 本页随之从「未授权 + 编辑入口」变成「已授权 + 状态展示」，不需要重建页面。
+ *
+ * 没有「清除授权」：凭据一旦换到就用到失效为止，本地作废凭据的半截语义
+ * （删盘但内存里 token 还在）只会让下一次 refresh 把它复活，见 Auth.refresh。
  */
 @Composable
 internal fun NetworkSettingsSection(
-    apiBase: String,
-    onSaveApiBase: suspend (String) -> String?,
-    onCommitApiBase: suspend (String) -> SaveOutcome,
-    onResetApiBase: suspend () -> Unit,
+    session: AuthSession?,
+    onAuthorize: suspend (String) -> String?,
     onClearHistory: () -> Unit,
     onClearFavorites: () -> Unit,
     onClearSearchHistory: () -> Unit,
@@ -390,7 +406,7 @@ internal fun NetworkSettingsSection(
     var editing by remember { mutableStateOf(false) }
     // 扫码弹窗的显隐。只有它为 true 时 LAN 服务才在监听，关闭即释放端口
     var lanConfig by remember { mutableStateOf(false) }
-    var draft by remember { mutableStateOf(apiBase) }
+    var draft by remember { mutableStateOf("") }
     var checking by remember { mutableStateOf(false) }
     var notice by remember { mutableStateOf<Notice?>(null) }
     // 三项「清空」都是不可撤销的批量删除，点一下先弹确认，确认后才真正清除
@@ -399,11 +415,15 @@ internal fun NetworkSettingsSection(
     val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
     val fieldFocus = remember { FocusRequester() }
+    // 首焦点必须落在**当前这一屏第一行可聚焦的**东西上，也就是「授权码」行：
+    // 未授权时它是编辑入口，已授权时它是状态展示 + 换码入口，两种态都可聚焦，
+    // 所以两种态都把 requester 挂在它身上。
     val firstFocus = remember { FocusRequester() }
+    val authorized = session != null
     // commit()/onClick 都是普通函数与 lambda，里面不能再调 @Composable 的 stringResource，
     // 所以固定文案在这里先取好；失败文案不预取，等渲染时再按来源翻译（见 Notice）
-    val savedText = stringResource(R.string.settings_network_saved)
-    val resetDoneText = stringResource(R.string.settings_network_reset_done)
+    val savedText = stringResource(R.string.settings_auth_saved)
+    val invalidCodeText = stringResource(R.string.settings_auth_invalid)
 
     // 编辑态自己一层返回：只收起编辑（等同取消），不退出子页。
     // 全应用只有 AppRoot 那一条 BackHandler，没有这一层时编辑中按返回会连子页一起退掉、
@@ -411,7 +431,7 @@ internal fun NetworkSettingsSection(
     // 「返回逐层退出」的语义没有被改掉，只是多插了一层。
     BackHandler(enabled = editing) {
         editing = false
-        draft = apiBase
+        draft = ""
         notice = null
     }
 
@@ -426,36 +446,43 @@ internal fun NetworkSettingsSection(
         }
     }
 
-    // 退出编辑必须把焦点交回「代理网址」这一行：编辑区（输入框 + 保存/取消）整块在
-    // if (editing) 里，收起编辑态时这些焦点节点一起离开组合，没人接的话遥控器按方向键
-    // 完全没有反应、屏幕上也不再有白框。
-    // 用 TvFirstFocus 重发（key 跟着 editing 走）：editing 由 true 翻成 false 时它等两帧
-    // 再抢，正好等编辑区的销毁提交完；editing 为 true 时传 null 停掉，免得跟输入框抢焦点。
-    TvFirstFocus(requester = if (editing) null else firstFocus, key = editing)
+    // 退出编辑、以及授权态翻转（兑换成功），都要把焦点交回第一行可聚焦的内容：
+    // 这些节点整块在 if (editing) / if (session == null) 里，收起时它们一起离开组合，
+    // 没人接的话遥控器按方向键完全没有反应、屏幕上也不再白框。
+    // key 带上 authorized：授权翻转会重排这一屏的行（状态行换 onValue），落点要重新抢一次。
+    TvFirstFocus(requester = if (editing) null else firstFocus, key = editing to authorized)
 
     fun startEdit() {
-        draft = apiBase
+        draft = ""
         notice = null
         editing = true
     }
 
     fun commit() {
         if (checking) return
+        // 与授权门一致：大写 + 只留字母数字 + 必须 8 位，不合法就不发请求
+        val code = draft.uppercase().filter { c -> c in 'A'..'Z' || c in '0'..'9' }
+        if (code.length != AUTH_CODE_LENGTH) {
+            notice = Notice(invalidCodeText, failed = true)
+            return
+        }
         checking = true
         scope.launch {
-            // 失败有两条来源，必须分开接：实现方给的是成品文案（它落了资源），
-            // 逃出来的异常只留错误码——e.message 是给排错看的原文，不许上屏（见 logSettingsFailure）
+            // 失败有两条来源，必须分开接：实现方给的是成品文案（VM 已按当前语言渲染），
+            // 逃出来的异常只留错误码——e.message 是给排错看的原文，不许上屏（见 logSettingsFailure）。
+            // 空输入的判断也归实现方（TvViewModel.authorize），这里不重复判一遍。
             var failureText: String? = null
             var failureCode: AppError? = null
             try {
-                failureText = onSaveApiBase(draft)
+                failureText = onAuthorize(code)
             } catch (e: Exception) {
-                failureCode = logSettingsFailure("保存代理网址", e, AppError.Unknown)
+                failureCode = logSettingsFailure("授权码兑换", e, AppError.Unknown)
             }
             checking = false
             if (failureText == null && failureCode == null) {
                 // 生效后才退出编辑态：失败留在框里，用户能就地改而不是从头再来
                 editing = false
+                draft = ""
                 notice = Notice(savedText, failed = false)
             } else {
                 notice = Notice(text = failureText.orEmpty(), failed = true, error = failureCode)
@@ -469,31 +496,51 @@ internal fun NetworkSettingsSection(
         firstFocus = firstFocus,
     ) { columnFocus ->
         SectionCard {
-            // 代理网址：点这一行直接进编辑框手动输入（电视上用系统输入法）。
-            // 扫码配置是更省事的可选入口，但手动输入必须始终可用——
-            // 手机不在手边、或局域网不通时，用户仍然要能改地址。
-            SettingRow(
-                label = stringResource(R.string.settings_network_api_base),
-                value = apiBase,
-                chevron = true,
-                modifier = Modifier.then(columnFocus.itemModifier(0)),
-                focusRequester = firstFocus,
-                onClick = { startEdit() },
-            )
+            if (session == null) {
+                // 未授权：这一行就是入口，点进去在它下面展开输入框。
+                // 扫码输入更省事，但手动输入必须始终可用——手机不在手边、
+                // 或者局域网不通时，用户仍然要能自己把码敲进去。
+                SettingRow(
+                    label = stringResource(R.string.settings_auth_code),
+                    value = stringResource(R.string.settings_auth_unauthorized),
+                    chevron = true,
+                    modifier = Modifier.then(columnFocus.itemModifier(0)),
+                    focusRequester = firstFocus,
+                    onClick = { startEdit() },
+                )
+            } else {
+                // 已授权：这一行报状态（授权码 + 到期时间 + 绑定 IP），但它**仍然可点**。
+                //
+                // 没有「清除授权」之后，这里是唯一的手动换码入口：凭据在服务端失效时
+                // （到期 / 换密钥），首页只会说「去设置填授权码」，而只读的一行会把
+                // 用户钉死在「已授权但用不了」上——电视上又没有第二条重来的路。
+                // 点进去直接填新码，兑换成功即覆盖旧 token（Auth.pair 本就是替换语义）。
+                SettingRow(
+                    label = stringResource(R.string.settings_auth_code),
+                    value = authStatusText(session),
+                    chevron = true,
+                    modifier = Modifier.then(columnFocus.itemModifier(0)),
+                    focusRequester = firstFocus,
+                    onClick = { startEdit() },
+                )
+            }
 
             if (editing) {
-                // 编辑区是「代理网址」这一行的下挂内容，紧跟它、不再额外吃行距，
+                // 编辑区是「授权码」这一行的下挂内容，紧跟它、不再额外吃行距，
                 // 这样它和上面那行的关系看起来就是「展开」而不是「另起一段」。
                 // 左右补 RingRoom：编辑区本身不聚焦，但它要和外层卡片的行左边缘对齐。
                 Column(
                     // 编辑区整块作为一个跟焦行（下标 1）：它随编辑态出现/消失，
-                    // 里面的输入框与保存/取消都在这块之内，跟焦只需把它整块摆进视口。
+                    // 里面的输入框与授权/取消都在这块之内，跟焦只需把它整块摆进视口。
                     Modifier.padding(horizontal = RingRoom).then(columnFocus.itemModifier(1)),
                 ) {
                     val focusManager = LocalFocusManager.current
                     BasicTextField(
                         value = draft,
+                        // 缓冲区照收；合法性由按键拦截 + 提交前闸门把守（见 AuthGateScreen 同类注释）
                         onValueChange = { draft = it },
+                        // 小写显示成大写：只改渲染，不动缓冲区
+                        visualTransformation = UppercaseTransformation,
                         singleLine = true,
                         textStyle = TextStyle(fontSize = 19.sp, color = ModaColors.Text),
                         cursorBrush = SolidColor(ModaColors.AccentSoft),
@@ -515,15 +562,28 @@ internal fun NetworkSettingsSection(
                                 when (event.key) {
                                     Key.DirectionUp -> focusManager.moveFocus(FocusDirection.Up)
                                     Key.DirectionDown -> focusManager.moveFocus(FocusDirection.Down)
+                                    // 确认键等于「授权」：电视上敲完码直接按确认是最短路径
                                     Key.DirectionCenter, Key.Enter -> { commit(); true }
-                                    else -> false
+                                    // 只放行字母与数字，符号就地吃掉：不碰文本缓冲区，
+                                    // 因此不影响任何输入法的合成状态（见 AuthGateScreen 同类注释）
+                                    // 满 8 位后一起吃掉字母数字：授权码就是 8 位，
+                                    // 多出来的第 9 个字符只会在提交时变成一条「码无效」的误导文案。
+                                    // 在按键层拒绝而不改写缓冲区，理由同 AuthGateScreen（IME 合成区）
+                                    else -> {
+                                        val ch = event.nativeKeyEvent.unicodeChar.toChar()
+                                        val printable = !ch.isISOControl() && ch != Char.MIN_VALUE
+                                        printable && (
+                                            draft.length >= AUTH_CODE_LENGTH ||
+                                                !(ch in 'A'..'Z' || ch in 'a'..'z' || ch in '0'..'9')
+                                            )
+                                    }
                                 }
                             },
                     )
                     Row {
                         SettingRow(
                             label = stringResource(
-                                if (checking) R.string.common_verifying else R.string.settings_network_save_verify,
+                                if (checking) R.string.common_verifying else R.string.settings_auth_submit,
                             ),
                             value = stringResource(R.string.common_confirm),
                             chevron = true,
@@ -535,44 +595,20 @@ internal fun NetworkSettingsSection(
                             value = stringResource(R.string.common_discard),
                             chevron = true,
                             modifier = Modifier.weight(1f),
-                            onClick = { editing = false; draft = apiBase; notice = null },
+                            onClick = { editing = false; draft = ""; notice = null },
                         )
                     }
                 }
             }
 
-            // 扫码配置作为可选入口：手机在手边时比遥控器打字快得多
+            // 扫码输入作为可选入口：手机打字比遥控器快得多。
+            // 兑换同样由数据层完成（LanConfigServer → Auth.pair），成功后本页靠 Flow 回灌。
             SettingRow(
-                label = stringResource(R.string.settings_network_scan),
-                value = stringResource(R.string.settings_network_scan_value),
+                label = stringResource(R.string.settings_auth_scan),
+                value = stringResource(R.string.settings_auth_scan_value),
                 chevron = true,
                 modifier = Modifier.then(columnFocus.itemModifier(2)),
                 onClick = { lanConfig = true },
-            )
-
-            // 不再单列「修改代理网址」：上面的「代理网址」行本身就是入口
-            // （带箭头、可点击 → 打开编辑框），再列一行是同一个动作的第二个入口。
-            SettingRow(
-                label = stringResource(R.string.settings_network_reset),
-                value = stringResource(if (checking) R.string.common_processing else R.string.common_reset),
-                chevron = true,
-                modifier = Modifier.then(columnFocus.itemModifier(3)),
-                onClick = {
-                    if (!checking) {
-                        checking = true
-                        scope.launch {
-                            try {
-                                onResetApiBase()
-                                notice = Notice(resetDoneText, failed = false)
-                            } catch (e: Exception) {
-                                // 恢复默认 = 删键，这里唯一的失败源就是本地存储
-                                notice = Notice(failed = true, error = logSettingsFailure("恢复默认地址", e, AppError.Storage))
-                            } finally {
-                                checking = false
-                            }
-                        }
-                    }
-                },
             )
 
             // 数据清理：三项都是不可撤销的批量删除，逐项二次确认
@@ -580,24 +616,24 @@ internal fun NetworkSettingsSection(
                 label = stringResource(R.string.settings_network_clear_history),
                 value = stringResource(R.string.common_clear),
                 chevron = true,
-                modifier = Modifier.then(columnFocus.itemModifier(4)),
+                modifier = Modifier.then(columnFocus.itemModifier(3)),
                 onClick = { pendingClear = PendingClear.History },
             )
             SettingRow(
                 label = stringResource(R.string.settings_network_clear_favorites),
                 value = stringResource(R.string.common_clear),
                 chevron = true,
-                modifier = Modifier.then(columnFocus.itemModifier(5)),
+                modifier = Modifier.then(columnFocus.itemModifier(4)),
                 onClick = { pendingClear = PendingClear.Favorites },
             )
             SettingRow(
                 label = stringResource(R.string.settings_network_clear_search),
                 value = stringResource(R.string.common_clear),
                 chevron = true,
-                modifier = Modifier.then(columnFocus.itemModifier(6)),
+                modifier = Modifier.then(columnFocus.itemModifier(5)),
                 onClick = { pendingClear = PendingClear.SearchHistory },
             )
-            HintText(stringResource(R.string.settings_network_clear_hint))
+            HintText(stringResource(R.string.settings_auth_hint))
         }
 
         // 操作反馈落在滚动内容的末尾：它可能来自这一页的任意一处，
@@ -633,11 +669,10 @@ internal fun NetworkSettingsSection(
         )
     }
 
-    // 扫码配置弹窗：服务在它进入组合时启动、离开组合时停止（见 LanConfigDialog 的 DisposableEffect）
+    // 扫码弹窗：服务在它进入组合时启动、离开组合时停止（见 LanConfigDialog 的 DisposableEffect）。
+    // 兑换与落盘都在数据层内部完成，本弹窗只回报关与「改成手动输入」两个动作。
     if (lanConfig) {
         LanConfigDialog(
-            url = apiBase,
-            save = onCommitApiBase,
             onDismiss = { lanConfig = false },
             onManualEdit = {
                 // 降级路径：拿不到局域网 IP 时改为手动输入（系统输入法）
@@ -850,7 +885,7 @@ internal fun SettingItem(
  * 分组卡片：底色、圆角，以及**行间距的唯一来源**。
  *
  * 这里不再额外给 spacedBy：行与行的缝隙由每行自己的 RingRoom 透明 padding 决定
- * （2 × 8dp = 16dp，处处等宽）。两套间距叠加正是此前「代理网址 → 扫码配置」
+ * （2 × 8dp = 16dp，处处等宽）。两套间距叠加正是此前「授权码 → 扫码输入」
  * 出现双倍空隙的原因，所以行之间也不许再插 Spacer/空 Box。
  */
 @Composable
@@ -954,7 +989,7 @@ internal fun SettingRow(
         // 之前两个错误都栽在这：
         //   ① 挂在内层 Box 上 → 焦点落在 Card，Box 收不到，focused 永远 false（白底白字）；
         //   ② 传 interactionSource 参数 → tv-material 的 Card 不吃这个组合，整行变得不可聚焦，
-        //      遥控器直接跳过它，于是「代理网址」这一行按不到、扫码弹窗也就打不开。
+        //      遥控器直接跳过它，于是「授权码」这一行按不到、扫码弹窗也就打不开。
         // 白圈画在卡片**布局边界之外**（tv-material 的 Border.inset 是向外扩的），
         // 而滚动容器会 clip 到自身视口：贴着视口底边的最后一行，圈的下沿就会被切。
         // 解法是让这圈外扩量由本行自己的透明 padding 承担——padding 属于布局，

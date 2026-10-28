@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,6 +33,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
@@ -48,11 +52,93 @@ import com.moda.tv.ui.components.LoadingState
 import com.moda.tv.ui.components.TvFirstFocus
 import com.moda.tv.ui.theme.ModaColors
 
-/** 全应用唯一入口：路由栈在 TvViewModel 里，这里只按栈顶渲染 */
+/**
+ * 全应用唯一入口：先过授权门，再按栈顶渲染。
+ *
+ * 三条分支是有意排成「先问授权态读没读到、再问授没授权」的，顺序不能换：
+ * 盘上的会话读出来之前 session 也是 null，先问授权就会在已授权的机器上先闪一屏授权框。
+ */
 @Composable
 fun AppRoot() {
     val context = LocalContext.current
+    // ViewModel 必须建在这一层：门与内容互相切换时它不能跟着重建，
+    // 否则切一次分支就等于清空路由栈、重读一遍盘上的会话。
     val vm: TvViewModel = viewModel { TvViewModel(context.applicationContext) }
+    val session by vm.authSession.collectAsStateWithLifecycle()
+    val exitApp: () -> Unit = { (context as? Activity)?.finish() }
+
+    // —— 下面三样是「更新检查」的全部运行时依赖，故意挂在授权门之外 ——
+    //
+    // 它们原来长在 AuthorizedContent 里，只有已授权、界面真的上屏了才跑。
+    // 可授权过期的那批设备恰恰是最需要新版的人：他们卡在授权门上，进不去
+    //「设置 → 关于」，也就没有第二条手动检查的路，永远等不到升级。
+    // 所以检查、进度、安装回流观察器都提到这一层：授权态一读出来就位，
+    // 门开着还是关着都一样。
+    //
+    // 一次冷启动只能打一次 GitHub：下面这一份是全应用唯一的启动检查，
+    // AuthorizedContent 里原来那份已经删掉。留两份 = 冷启动打两次 API，
+    // 两次都可能改 updateUi、互相覆盖。
+    LaunchedEffect(Unit) { vm.checkUpdate(manual = false) }
+
+    // 下载进度是 StateFlow（回调在 IO 线程，见 TvViewModel.updateProgress），
+    // 组合里 collectAsState 读，天然回到主线程。
+    val updateProgress by vm.updateProgress.collectAsStateWithLifecycle()
+
+    // 从系统「安装未知来源 / 安装确认」页回来要续装：那是一个独立的 Activity，
+    // 回来时组合不会重建，只有 ON_RESUME 能告诉我们"用户已经回来了"。
+    // 挂在门这一层是为了让未授权时弹出的更新提示也能走完安装回流。
+    // onDispose 必须反注册：不摘的话每次重组都往 Activity 上多挂一个 observer，
+    // 一路累加（表现为一次回到前台弹出好几个安装器）。
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) vm.onReturnedFromForeground()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    when {
+        // a) 还不知授权态：只铺底色，什么都不画——不画门，也不画内容。
+        // 这一段是冷启动的第一两帧，画门等于给已授权的机器看一眼「需要授权」。
+        !vm.authReady -> {
+            // 授权态还没定的这两帧里，返回键必须吞掉：不吞就走系统默认的 finish。
+            // 已授权的机器开机按返回，用户看到的是「应用闪退」而不是他熟悉的「确认退出」，
+            // 而这种只发生在两帧内的闪退事后极难对上号。窗口极短，再按一次就落到正常界面。
+            BackHandler(enabled = true) { /* 授权态未定，先吞掉 */ }
+            Box(Modifier.fillMaxSize().background(ModaColors.Bg))
+        }
+
+        // b) 确定未授权：整屏只有门。Dest 的分支一个都不进组合——
+        // 不是「画出来再用遮罩盖住」：盖住的内容照样在组合里、照样会发请求。
+        session == null -> AuthGateScreen(
+            onAuthorize = vm::authorize,
+            // 退出走 AppRoot 里已有的那一份拿法，不另造退出机制
+            onExit = exitApp,
+        )
+
+        // c) 已授权：正常界面。授权成功时 session 变非空，分支自己切到这一条；
+        // 首页由 TvViewModel.applyAuthorized() 里既有的 loadHome() 装载，这里不做任何跳转。
+        else -> AuthorizedContent(vm)
+    }
+
+    // 授权门外的挂载点：a) 授权态未定、b) 确定未授权——这两条分支本来就不显示
+    // 版权弹窗，所以 suppressed 恒为 false。已授权那条由 AuthorizedContent 自己挂
+    // （它要按版权弹窗让位），两边条件互斥，同屏只会有一个 UpdateDialogHost。
+    if (!vm.authReady || session == null) {
+        UpdateDialogHost(vm = vm, progress = updateProgress, suppressed = false)
+    }
+}
+
+/**
+ * 已授权后的正常界面：路由栈在 TvViewModel 里，这里只按栈顶渲染。
+ *
+ * 整段内容原样从旧的 AppRoot 搬过来（返回链、版权弹窗、退出确认一字未改），
+ * 区别只在它现在挂在上面的第三条分支里：未授权时这些调用一次都不会发生。
+ */
+@Composable
+private fun AuthorizedContent(vm: TvViewModel) {
+    val context = LocalContext.current
 
     // 首页按返回不直接退出应用：电视上误触返回就闪退很恼人，先弹一次确认。
     // 非首页仍然直接退一层。
@@ -97,6 +183,12 @@ fun AppRoot() {
         showCopyright = acked != BuildConfig.VERSION_CODE
     }
 
+    // 启动检查与安装回流观察器已经提到 AppRoot（授权门外），这里不再有第二份。
+    // 下载进度还得自己收一份：AuthorizedContent 的签名保持 (vm: TvViewModel) 不变，
+    // 版权状态留在本层 remember，不为了传一个进度值把 400 行既有逻辑牵上去。
+    // StateFlow 多一个收集者只是各读各的当前值，不会重放历史、也不会互相覆盖。
+    val updateProgress by vm.updateProgress.collectAsStateWithLifecycle()
+
     Box(Modifier.fillMaxSize().background(ModaColors.Bg)) {
         when (val dest = vm.current) {
             is Dest.Home -> HomeRoute(vm)
@@ -110,6 +202,8 @@ fun AppRoot() {
                 vm = vm,
                 group = dest.group,
                 onOpenCopyright = { manualCopyright = true },
+                // 「关于」页的「检查更新」行：manual = true，失败要在弹窗里说出来
+                onCheckUpdate = { vm.checkUpdate(manual = true) },
             )
             is Dest.Detail -> DetailRoute(vm, dest)
             is Dest.Player -> PlayerRoute(vm)
@@ -133,6 +227,14 @@ fun AppRoot() {
         )
     }
 
+    // 渲染规则与授权门外那一份完全共用（见 UpdateDialogHost），
+    // 唯一区别是这里要按版权弹窗让位。
+    UpdateDialogHost(
+        vm = vm,
+        progress = updateProgress,
+        suppressed = showCopyright || manualCopyright,
+    )
+
     if (showExitDialog) {
         ExitConfirmDialog(
             onConfirm = {
@@ -141,6 +243,39 @@ fun AppRoot() {
             },
             onDismiss = { showExitDialog = false },
         )
+    }
+}
+
+/**
+ * 更新弹窗的唯一渲染出口：授权门内外共用这一份。
+ *
+ * 为什么要有这个函数：门内门外都要弹，但门内还多一条「版权弹窗优先」的护栏。
+ * 把渲染规则收在一处，两条挂载点就不会一边改了另一边忘了——「没检测到就没有」
+ * 这条臂漏改一次，Latest 就会被 else 接住，凭空弹一个只剩「以后再说」的空弹窗。
+ *
+ * Idle / Latest / Checking 不渲染：没检测到就没有，也不造一个"已是最新"的弹窗
+ * 来打断正在看剧的人。
+ *
+ * suppressed 承载的是「版权弹窗在屏时更新弹窗让位」：两个 Dialog 是两个窗口、
+ * 两套焦点，同时上屏就是遥控器抢键（启动首帧恰好"升级提示"与"发现新版本"撞在一起）。
+ * 版权弹窗关掉后 updateUi 还是 Available，那一帧自然就会补上，不需要任何排队逻辑。
+ *
+ * 「立即安装」也走 onDownload：VM 见到已下好的包会跳过下载直接再试一次安装，
+ * 这样"重试安装"与"首次下载"共用同一个入口，UI 不必再记一个 VM 方法名。
+ */
+@Composable
+private fun UpdateDialogHost(vm: TvViewModel, progress: UpdateProgress, suppressed: Boolean) {
+    when (val update = vm.updateUi) {
+        UpdateUi.Idle, UpdateUi.Latest, UpdateUi.Checking -> Unit
+        else -> if (!suppressed) {
+            UpdateDialog(
+                state = update,
+                progress = progress,
+                onDownload = vm::downloadUpdate,
+                onIgnore = vm::ignoreUpdate,
+                onDismiss = vm::dismissUpdate,
+            )
+        }
     }
 }
 
@@ -285,17 +420,14 @@ private fun FavoritesRoute(vm: TvViewModel) {
 }
 
 /**
- * 设置页：当前代理网址来自 [TvViewModel.apiBase] 这条 Flow，改完立刻回灌到屏幕，
- * 所以保存之后不需要重启应用——屏幕上的地址就是正在用的地址。
+ * 设置页：授权态来自 [TvViewModel.authSession] 这条 Flow，兑换后立刻回灌到屏幕，
+ * 所以不需要重启应用——屏幕上显示的授权状态就是正在生效的那一份。
  */
 @Composable
 private fun SettingsRoute(vm: TvViewModel) {
-    val apiBase by vm.apiBase.collectAsStateWithLifecycle()
+    val session by vm.authSession.collectAsStateWithLifecycle()
     SettingsScreen(
-        apiBase = apiBase,
-        onSaveApiBase = { raw -> vm.saveApiBase(raw) },
-        onCommitApiBase = { raw -> vm.commitApiBase(raw) },
-        onResetApiBase = { vm.resetApiBase() },
+        session = session,
         onClearHistory = vm::clearHistory,
         onClearFavorites = vm::clearFavorites,
         onClearSearchHistory = vm::clearSearchHistory,
@@ -307,7 +439,7 @@ private fun SettingsRoute(vm: TvViewModel) {
 }
 
 /**
- * 设置子页：只按 group 选渲染哪一段，三段共享同一份代理网址与播放设置。
+ * 设置子页：只按 group 选渲染哪一段，三段共享同一份授权态与播放设置。
  *
  * 每页进入时各自从 store 读一次当前值（见 rememberPlayerSettingsHolder），
  * 所以播放子页改完返回菜单，摘要拿到的就是刚写进去的新值。
@@ -318,23 +450,27 @@ private fun SettingsGroupRoute(
     vm: TvViewModel,
     group: SettingsSectionId,
     onOpenCopyright: () -> Unit,
+    /** 「关于」页那一行的点按；真正的检查跑在 viewModelScope 上，屏幕层不碰 Repo */
+    onCheckUpdate: () -> Unit,
 ) {
-    val apiBase by vm.apiBase.collectAsStateWithLifecycle()
+    val session by vm.authSession.collectAsStateWithLifecycle()
     when (group) {
         SettingsSectionId.Playback -> PlaybackSettingsSection(
             holder = rememberPlayerSettingsHolder(vm::updatePlayerSettings),
         )
         SettingsSectionId.Network -> NetworkSettingsSection(
-            apiBase = apiBase,
-            onSaveApiBase = { raw -> vm.saveApiBase(raw) },
-            onCommitApiBase = { raw -> vm.commitApiBase(raw) },
-            onResetApiBase = { vm.resetApiBase() },
+            session = session,
+            onAuthorize = { invite -> vm.authorize(invite) },
             onClearHistory = vm::clearHistory,
             onClearFavorites = vm::clearFavorites,
             onClearSearchHistory = vm::clearSearchHistory,
         )
-        // 关于子页唯一可点的一行就是版权声明入口
-        SettingsSectionId.About -> AboutSettingsSection(onOpenCopyright = onOpenCopyright)
+        // 关于子页有两行可点：检查更新与版权声明（首焦点给前者）
+        SettingsSectionId.About -> AboutSettingsSection(
+            onOpenCopyright = onOpenCopyright,
+            updateUi = vm.updateUi,
+            onCheckUpdate = onCheckUpdate,
+        )
     }
 }
 

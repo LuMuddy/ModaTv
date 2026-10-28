@@ -55,6 +55,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Border
@@ -182,8 +183,24 @@ fun ActionButton(
      * 放大只改绘制不改布局，白框上下沿会被视口切掉（焦点样式只许改绘制，不许改尺寸）。
      */
     focusedScale: Float = 1.08f,
+    /*
+     * 标签字号。默认 20sp 是列表页/空态里合适的尺寸；
+     * 开机授权门这种「一屏只有两个按钮、隔两三米看」的场景允许调大。
+     */
+    labelSize: TextUnit = 20.sp,
+    /*
+     * 标签是否在这个按钮内部水平居中。
+     *
+     * 默认 false：tv-material 的 Button 内容行是靠左排的，而绝大多数调用点都是
+     * 「宽度跟着文字走」的窄按钮，居不居中根本看不出来。
+     * 只有「被 weight/fillMaxWidth 撑得很宽」的按钮才需要显式打开——
+     * 注意别反过来在默认路径上加 fillMaxWidth：那会让弹窗里的窄按钮在无界约束下撑满整行。
+     */
+    centerLabel: Boolean = false,
+    /** 圆角。默认 10dp 是列表/弹窗里的方角按钮；授权门那种「一屏两个胶囊」可以调到 32dp */
+    cornerRadius: Dp = 10.dp,
 ) {
-    val corner = 10.dp
+    val corner = cornerRadius
     Button(
         onClick = onClick,
         enabled = enabled,
@@ -207,12 +224,22 @@ fun ActionButton(
         ),
         contentPadding = ButtonDefaults.ContentPadding,
     ) {
-        Text(
-            text = text,
-            style = TvBody.copy(fontSize = 20.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
-            // 显式跟随内容色：TvBody 里烤死的 #F2F3F7 在聚焦白底上只有 1.11:1
-            color = contentColor(),
-        )
+        val label: @Composable () -> Unit = {
+            Text(
+                text = text,
+                style = TvBody.copy(fontSize = labelSize, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
+                // 显式跟随内容色：TvBody 里烤死的 #F2F3F7 在聚焦白底上只有 1.11:1
+                color = contentColor(),
+            )
+        }
+        // 宽按钮才需要这一层：Box 吃掉按钮内部的整行宽度，把文字摆到正中
+        if (centerLabel) {
+            // 宽高都要吃满：只填宽度时，行内竖直方向仍是靠上排的，
+            // 按钮被撑高之后文字看着就「顶在上面」——实测在 68dp 高的胶囊上很明显
+            Box(Modifier.fillMaxWidth().fillMaxHeight(), contentAlignment = Alignment.Center) { label() }
+        } else {
+            label()
+        }
     }
 }
 

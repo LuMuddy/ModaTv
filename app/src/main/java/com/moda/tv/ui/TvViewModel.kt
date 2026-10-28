@@ -56,6 +56,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
@@ -288,8 +289,13 @@ class TvViewModel(private val app: Context) : ViewModel() {
      */
     private val loadingTabs = mutableStateMapOf<HomeTab, Boolean>()
 
-    /** 当前 tab 是否在加载（UI 直接读这个，不要自己去查 loadingTabs） */
-    val homeLoading: Boolean get() = loadingTabs[homeTab] == true
+    /**
+     * 当前 tab 是否在加载（UI 直接读这个，不要自己去查 loadingTabs）。
+     *
+     * 授权态还没从盘上读出来之前也算加载中：那一帧什么都不知道，
+     * 显示「未授权」会让已授权的机器冷启动闪一屏错误，显示空态又等于骗用户「首页没内容」。
+     */
+    val homeLoading: Boolean get() = loadingTabs[homeTab] == true || !authKnown
 
     /**
      * 首页错误码（文案由 UI 层用 appErrorText 渲染）。**只有「缓存也没有 + 网络也失败」时才会非 null**：
@@ -429,8 +435,192 @@ class TvViewModel(private val app: Context) : ViewModel() {
         }
     }
 
-    init {
+    // ---------------- 授权 ----------------
+
+    // 这一段必须声明在 init 之前：init 里的 launch 跑在 Dispatchers.Main.immediate 上，
+    // 在主线程构造时它会在第一个挂起点之前同步执行——晚一步初始化这几个字段就是一次空指针。
+
+    private val authStore: AuthSessionStore = AuthSessionStoreImpl.create(app)
+
+    /**
+     * 授权会话（null == 未授权）。
+     *
+     * 没有直接 stateIn store 的 Flow：那样初值就是 null，「还没读到盘」与「确定未授权」
+     * 混成同一个值，已授权的机器冷启动会先闪一屏未授权错误。读到第一份值之前由
+     * [homeLoading] 顶成加载中（见 authKnown）。
+     */
+    private val sessionState = MutableStateFlow<AuthSession?>(null)
+    val authSession: StateFlow<AuthSession?> = sessionState.asStateFlow()
+
+    /** 盘上的会话是否已经读出来过一次；false 期间首页显示「加载中」而不是「未授权」 */
+    private var authKnown by mutableStateOf(false)
+
+    /**
+     * 对外只读暴露 [authKnown]，给 AppRoot 的门禁分发用：
+     * 「还没读到盘」与「确定未授权」必须是两个分支，否则已授权机器冷启动会先闪一屏授权框。
+     */
+    val authReady: Boolean get() = authKnown
+
+    private var authRefreshJob: Job? = null
+
+    /** 未授权就不许碰 Repo：首页所有装载入口都先过这一道 */
+    private val authorized: Boolean get() = sessionState.value != null
+
+    /**
+     * 授权态的唯一入口：启动读盘、兑换成功都从这里过一遍。
+     *
+     * 只有「从未授权变成已授权」才重装首页：到期时间、绑定 IP 这类字段的变化
+     * 不该让用户正在看的那一屏重新打一遍网络。
+     */
+    private suspend fun observeAuth() {
+        try {
+            authStore.session.collect { session ->
+                val wasAuthorized = sessionState.value != null
+                sessionState.value = session
+                authKnown = true
+                when {
+                    session == null -> onUnauthorized()
+                    wasAuthorized -> Unit
+                    else -> {
+                        loadHome()
+                        refreshAuthInBackground()
+                    }
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // 读不到盘就按未授权处理：不能让首页停在一个未知的授权态里空转
+            Log.w("TvViewModel", "授权会话读取失败：${e.message}")
+            authKnown = true
+            sessionState.value = null
+            onUnauthorized()
+        }
+    }
+
+    /**
+     * 已有会话时向服务端核一次状态；不阻塞首帧（盘上的会话先照常用）。
+     *
+     * 失败刻意分两档：返回 null 是数据层「token 已失效」的明确结论，落未授权；
+     * 抛异常只说明这一次没问成（断网、后端抖动），保留旧会话——
+     * 否则用户会因为一次网络抖动被踢回未授权，还得重新去找授权码。
+     */
+    private fun refreshAuthInBackground() {
+        authRefreshJob?.cancel()
+        authRefreshJob = viewModelScope.launch {
+            val fresh = try {
+                Auth.refresh()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("TvViewModel", "授权状态刷新失败：${e.message}")
+                return@launch
+            }
+            if (fresh == null) {
+                sessionState.value = null
+                onUnauthorized()
+            } else {
+                sessionState.value = fresh
+            }
+        }
+    }
+
+    /**
+     * 授权码兑换：一次性兑换券换回会话。
+     *
+     * 返回 null 表示已授权，否则是按当前语言渲染好的失败原因。空输入不发给后端
+     * （必然白跑一趟），规整（去空白 / 大小写 / 长度）交给数据层的 [Auth.pair]。
+     * 失败路径上什么都没写：既不落盘，也没动 Api.TOKEN，用户留在编辑框里改一个字重试即可。
+     */
+    suspend fun authorize(invite: String): String? {
+        if (invite.isBlank()) return app.getString(R.string.settings_auth_code_required)
+        return try {
+            // 落盘是 Auth.pair 内部同一次事务（token 与到期 / 绑定信息一起进 store），
+            // 这里不再重复写：同一个 DataStore 开出第二条写路径只会让"半截会话"有机会出现
+            val session = Auth.pair(invite)
+            applyAuthorized(session)
+            null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: ApiException) {
+            // 具体是哪一类由数据层分好，文案只从资源里取，这里不现编句子
+            val textRes = when (e.error) {
+                AppError.AuthFailed -> R.string.err_auth_failed
+                AppError.Unauthorized -> R.string.err_unauthorized
+                else -> R.string.settings_auth_failed
+            }
+            Log.w("TvViewModel", "授权码兑换失败：${e.error}")
+            app.getString(textRes)
+        } catch (e: Exception) {
+            Log.w("TvViewModel", "授权码兑换异常：${e.message}")
+            app.getString(R.string.settings_auth_failed)
+        }
+    }
+
+    /** 已授权：作废旧缓存，把首页从零装一遍 */
+    private fun applyAuthorized(session: AuthSession) {
+        sessionState.value = session
+        authKnown = true
+        // 授权换的是「这一段时间能不能取数据」，上一份缓存与门禁时刻都属于上一段：
+        // 不清掉的话用户授权成功后看到的还是旧内容，30 分钟门禁也会拒绝重拉
+        Repo.invalidateHomeCache()
+        homeFetchedAt = 0L
+        feedState.clear()
+        homeError = null
         loadHome()
+    }
+
+    /**
+     * 未授权：一个 Repo 请求都不发，首页直接落成 [AppError.Unauthorized]。
+     *
+     * 顺手清掉首页内容：错误态只在「一条都没有」时才显示（见 HomeScreen），
+     * 留着旧内容的话用户看到的是上一次授权期的片子，而不是「去设置填授权码」这句话。
+     * 历史 / 收藏 / 已完成 / 设置各读各的 store，不受这里影响——它们与凭据无关。
+     *
+     * 同时把路由栈收回栈底：凭据一失效，播放页 / 详情页就没有任何数据可显示，
+     * 授权门只是盖在它们上面；等用户重新填码回到正常界面时，看到的必须是从首页开始，
+     * 而不是一个还带着上一段凭据的快照播放页。
+     */
+    private fun onUnauthorized() {
+        pageJob?.cancel()
+        homeRefreshing = false
+        homeJobs.values.forEach { it.cancel() }
+        homeJobs.clear()
+        feedTokens.clear()
+        loadingTabs.clear()
+        feedState.clear()
+        homeError = AppError.Unauthorized
+        // 复用 pop()：播放器销毁、详情态复位都在它里面，这里再写一遍清理必然漏一项
+        while (stack.size > 1 && pop()) { /* 逐层出栈，直到首页 */ }
+    }
+
+    /**
+     * 后台判定凭据过期：作废本地会话，界面自己退到授权门等用户重填。
+     *
+     * 触发点在数据层（[AuthSignal]，业务请求 401），这里只做落成界面的一步：
+     * 清 token 与盘上的会话 → 会话态置空（AppRoot 的分支自动切到门）→ 收掉首页与路由栈。
+     * 不清历史 / 收藏 / 已完成 / 播放记录：那些是本机数据，与凭据是否有效无关。
+     */
+    private suspend fun expireAuth() {
+        Log.w("TvViewModel", "后台判定授权过期：作废本地会话，回到授权门")
+        // 先作废凭据再改界面状态：中间这一小段里任何抢跑的请求都必须已经是"无凭据"短路，
+        // 而不是带着刚被判死的 token 再打一次后端
+        Auth.signOut()
+        sessionState.value = null
+        authKnown = true
+        onUnauthorized()
+    }
+
+    init {
+        // 首页要不要装，得先知道有没有授权（见 authorized）。读盘读完之前首页按加载中渲染，
+        // 读出来之后 observeAuth 负责把首页领进「未授权错误态」或正常装载流程。
+        // 这里只做启动，不在这里读盘：同步读 session 会把首帧钉在 DataStore 的 IO 上。
+        viewModelScope.launch { observeAuth() }
+        // 401 是从 19 路并发里异步回来的，只能靠广播收：任何一路拿到就够，
+        // 多路同时拿到也只是重复作废一次（signOut 与 onUnauthorized 都是幂等的）
+        viewModelScope.launch {
+            AuthSignal.invalidated.collect { expireAuth() }
+        }
     }
 
     // ---------------- 导航 ----------------
@@ -445,7 +635,7 @@ class TvViewModel(private val app: Context) : ViewModel() {
             is Dest.Completed -> stack.add(dest)
             // === 收藏模块（勿删）=== 条目流由 favoriteEntries 常驻，进栈即可，无装载任务
             is Dest.Favorites -> stack.add(dest)
-            // 设置页只读本地状态（版本号/设备信息/代理网址），没有网络装载任务
+            // 设置页只读本地状态（版本号/设备信息/授权会话），没有网络装载任务
             is Dest.Settings -> stack.add(dest)
             // 设置子页同理：内容全是本地状态，进栈即渲染，无装载任务
             is Dest.SettingsGroup -> stack.add(dest)
@@ -502,6 +692,11 @@ class TvViewModel(private val app: Context) : ViewModel() {
      * 电视上冷启动会闪两次；缓存先落位则首帧就有内容。
      */
     fun ensureHomeLoaded() {
+        // 未授权时一个 Repo 请求都不许发：首页直接落成「去设置填授权码」
+        if (!authorized) {
+            onUnauthorized()
+            return
+        }
         viewModelScope.launch {
             // 灌缓存与取门禁时间是同一次读盘，不拆成两次
             val (cached, pageAt) = withContext(Dispatchers.IO) {
@@ -565,6 +760,8 @@ class TvViewModel(private val app: Context) : ViewModel() {
      * 摆在每次重组都会跑的位置，等于每帧判一次门禁。
      */
     fun checkHomeFreshness() {
+        // 未授权连门禁都不判：判出「该刷」只会再多一次注定失败的请求
+        if (!authorized) return
         if (pageJob?.isActive == true) return
         viewModelScope.launch {
             // 这里只需要整页时间，不必把 19 份快照一起读上来
@@ -586,6 +783,11 @@ class TvViewModel(private val app: Context) : ViewModel() {
     /** 切 tab：只有这个 tab 从来没装载过（feed 还是 null）才触发首次装载 */
     fun selectHomeTab(tab: HomeTab) {
         homeTab = tab
+        // 未授权时清 homeError 只会让错误态瞬间变成空态（闪一下「暂无内容」再变回来）
+        if (!authorized) {
+            onUnauthorized()
+            return
+        }
         homeError = null
         if (homeFeeds[tab] == null) loadFeed(tab)
     }
@@ -603,6 +805,12 @@ class TvViewModel(private val app: Context) : ViewModel() {
      */
     @Suppress("UNUSED_PARAMETER")
     fun refreshHome(tab: HomeTab = homeTab) {
+        // 错误态里的「重新加载」也走这里：未授权时清掉 homeError 再被守卫挡回去，
+        // 用户会看到错误文案闪成「暂无内容」——这一道放在清空之前
+        if (!authorized) {
+            onUnauthorized()
+            return
+        }
         homeError = null
         refreshAllHome("手动刷新")
     }
@@ -619,6 +827,11 @@ class TvViewModel(private val app: Context) : ViewModel() {
      * 否则断网一次就会把门禁推到 30 分钟之后，用户再怎么重进首页也不会重试。
      */
     fun refreshAllHome(reason: String) {
+        // 首页的「重新加载」按钮也走这里：未授权时按了不该真去拉 19 个 tab
+        if (!authorized) {
+            onUnauthorized()
+            return
+        }
         // 防重入：一轮没跑完再点一次刷新，只会让这 19 个 tab 各自被打两遍
         if (pageJob?.isActive == true) return
         // 作废 Repo 的整页缓存（10 分钟 TTL），否则这一次「刷新」会原样返回
@@ -758,6 +971,10 @@ class TvViewModel(private val app: Context) : ViewModel() {
      * 因此这条流水线只有一个语义——「重拉这一屏并整体覆盖」。
      */
     private fun loadFeed(tab: HomeTab) {
+        if (!authorized) {
+            onUnauthorized()
+            return
+        }
         homeJobs[tab]?.cancel()
         loadingTabs[tab] = true
         // 自报家门的令牌：旧任务被 cancel 后它的 finally 会晚一步跑到，

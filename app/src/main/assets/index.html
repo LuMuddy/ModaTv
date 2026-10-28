@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ModaTV 代理网址</title>
+<title>ModaTV 授权码</title>
 <style>
   * { box-sizing: border-box }
 
@@ -24,7 +24,9 @@
   input {
     width: 100%;
     padding: 14px;
-    font-size: 16px;
+    font-size: 20px;
+    letter-spacing: 4px;
+    text-align: center;
     border-radius: 10px;
     border: 2px solid #2a2f3a;
     background: #15161c;
@@ -55,6 +57,7 @@
     background: #12351f;
     color: #7ee2a8;
     font-size: 15px;
+    line-height: 1.5;
   }
 
   .err {
@@ -65,30 +68,74 @@
     color: #ff9d9d;
     font-size: 15px;
     line-height: 1.5;
-    word-break: break-all;
   }
+
+  .status { margin-bottom: 16px; font-size: 14px; line-height: 1.6; color: #9aa0ae }
 
   .tip { margin-top: 18px; font-size: 12px; color: #6b7280; line-height: 1.6 }
 </style>
 </head>
-<body>
-<h1>ModaTV 代理网址</h1>
-<p class="hint">在下面填写代理地址的完整 URL，提交后电视端立即生效。</p>
-<!--BANNER_SLOT-->
+<body data-auth-state="__AUTH_STATE__" data-expires-at="__EXPIRES_AT__" data-result="__RESULT__">
+<h1>ModaTV 授权码</h1>
+<p class="hint">向管理员索取 8 位一次性授权码，填在下面提交，电视端随即完成授权。</p>
+<div id="banner"></div>
+<div id="state" class="status"></div>
 <form method="POST" action="/save">
-  <label for="url">代理网址</label>
-  <input id="url" name="url" type="text" inputmode="url" autocomplete="off" spellcheck="false"
-         value="__VALUE__" placeholder="https://proxy.example.com">
-  <button type="submit">提交并验证</button>
+  <label for="invite">8 位授权码</label>
+  <input id="invite" name="invite" type="text" inputmode="text" autocomplete="off"
+         autocapitalize="characters" spellcheck="false" maxlength="8" placeholder="例：7F3K9QX2" required>
+  <button type="submit">提交授权码</button>
 </form>
-<p class="tip">必须以 http:// 或 https:// 开头。提交后会先用该地址做一次探活，不通则不保存。</p>
+<p class="tip">
+  授权码由管理员一次性发放，兑换成功即作废；电视端保存的是兑换回来的凭据，本页不显示、也不回传任何凭据。
+  提交完成后可以直接关闭本页。
+</p>
 <script>
-  // 这个文件同时是「模板」和「可直接预览的页面」：
-  // LanConfigServer 会把 value 换成电视上当前生效的地址，直接打开本文件时它还留着占位符——
-  // 那样看起来像坏了，所以这里把没被替换掉的占位符清空。
+  // 这个文件同时是「模板」和「可直接预览的页面」：LanConfigServer 只把 body 上三个
+  // data 属性换成状态码，句子全部留在这里 —— 电视端代码不上屏中文（上屏文案一律走 string 资源），
+  // 而本页每一句都是给手机看的，写在一处就不会出现两份对不上的文案。
+  // 直接打开本文件时属性还留着占位符，走到哪个分支都不匹配，页面就是干净的空状态。
   (function () {
-    var input = document.getElementById('url');
-    if (input && input.value.indexOf('__') === 0) input.value = '';
+    var body = document.body;
+
+    // 服务端下发的是一次提交的结果码，用户能做的事各不相同，所以分开说：
+    // 码坏了让他去换新码，存储坏了让他重试 —— 混成一句「失败」他就只能瞎试
+    var TEXT = {
+      saved: { cls: 'ok', text: '授权成功，电视端已生效，可以关闭本页面。' },
+      empty: { cls: 'err', text: '请先填写 8 位授权码。' },
+      auth_failed: { cls: 'err', text: '授权码无效、已使用或已过期，请向管理员索取新的授权码。' },
+      auth_required: { cls: 'err', text: '未授权，请重新填写授权码。' },
+      storage: { cls: 'err', text: '电视端保存授权信息失败，请稍后重试。' },
+      failed: { cls: 'err', text: '授权失败，请稍后重试。' }
+    };
+
+    var result = TEXT[body.getAttribute('data-result')];
+    if (result) {
+      var banner = document.getElementById('banner');
+      banner.className = result.cls;
+      // textContent 而不是 innerHTML：这些是纯文本，永远不该被当成标记解释
+      banner.textContent = result.text;
+    }
+
+    function two(n) { return n < 10 ? '0' + n : '' + n; }
+
+    function formatTime(ms) {
+      var d = new Date(ms);
+      return d.getFullYear() + '-' + two(d.getMonth() + 1) + '-' + two(d.getDate()) +
+        ' ' + two(d.getHours()) + ':' + two(d.getMinutes());
+    }
+
+    // 到期时间由电视端下发毫秒时间戳，按手机本地时区显示：用户对的是自己的表
+    var state = body.getAttribute('data-auth-state');
+    var expires = Number(body.getAttribute('data-expires-at')) || 0;
+    var stateEl = document.getElementById('state');
+    if (state === 'authorized') {
+      stateEl.textContent = expires > 0
+        ? '电视端当前已授权，到期时间 ' + formatTime(expires) + '。'
+        : '电视端当前已授权，不限期。';
+    } else if (state === 'unauthorized') {
+      stateEl.textContent = '电视端当前未授权。';
+    }
   })();
 </script>
 </body>

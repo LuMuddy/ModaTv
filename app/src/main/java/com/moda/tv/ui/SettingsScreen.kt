@@ -40,7 +40,7 @@ import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
 import com.moda.tv.BuildConfig
 import com.moda.tv.R
-import com.moda.tv.data.SaveOutcome
+import com.moda.tv.data.local.AuthSession
 import com.moda.tv.data.local.PlayerSettings
 import com.moda.tv.ui.components.TvColumnFocusScroll
 import com.moda.tv.ui.components.TvFirstFocus
@@ -59,27 +59,18 @@ import com.moda.tv.ui.theme.TvTitle
  *
  * 现在的分工：本页只回答「想改哪一类」，细节全在 [SettingsGroup] 对应的子页里
  * （PlaybackSettingsSection / NetworkSettingsSection / AboutSettingsSection）。
- * 每张卡右侧的摘要是**当前真实值**，所以光看菜单就知道内核、地址、版本是什么，
+ * 每张卡右侧的摘要是**当前真实值**，所以光看菜单就知道内核、授权状态、版本是什么，
  * 大多数时候连子页都不用进。
  */
 @Composable
 fun SettingsScreen(
-    /** 当前生效的代理网址；由 store 的 Flow 驱动，改完立刻变，不需要重启 */
-    apiBase: String,
     /**
-     * 校验 + 探活 + 保存。返回 null 表示已生效，否则是给用户看的失败原因。
-     * 失败时实现方必须什么都没写，屏幕这边也只提示、不改 [apiBase]。
+     * 当前授权会话；null == 未授权。由 ViewModel 的 Flow 驱动，兑换后立刻变，不需要重启。
+     *
+     * 兑换的入口不在这里：它属于「网络与数据」子页（见 NetworkSettingsSection），
+     * 菜单页只显示摘要——多一个入口就是同一个动作的第二种说法。
      */
-    onSaveApiBase: suspend (String) -> String?,
-    /**
-     * 与 [onSaveApiBase] 同一套校验，但返回结构化结果：
-     * 局域网弹窗要拿"规范化后的实际地址"来回显与刷新，光有 null 不够。
-     */
-    onCommitApiBase: suspend (String) -> SaveOutcome = { raw ->
-        onSaveApiBase(raw)?.let { SaveOutcome.Fail(it) } ?: SaveOutcome.Ok(raw)
-    },
-    /** 恢复默认地址；成功后 [apiBase] 会随之变回默认值 */
-    onResetApiBase: suspend () -> Unit,
+    session: AuthSession?,
     onClearHistory: () -> Unit,
     onClearFavorites: () -> Unit,
     onClearSearchHistory: () -> Unit,
@@ -165,9 +156,9 @@ fun SettingsScreen(
             SettingsEntryCard(
                 title = stringResource(SettingsSectionId.Network.titleRes),
                 desc = stringResource(SettingsSectionId.Network.descRes),
-                // 代理网址可能很长（带路径/端口），摘要单行截断，
-                // 想看全的进子页——那里才是逐字可读的地方
-                summary = apiBase,
+                // 摘要只说「已授权 / 未授权」：这是唯一影响用户能不能用的一句话，
+                // 到期时间、绑定 IP 这类凭据细节连子页都不显示（过期由后台判定，客户端自己回门）
+                summary = authStatusText(session),
                 onClick = { onOpenGroup(SettingsSectionId.Network) },
                 modifier = Modifier.then(columnFocus.itemModifier(1)),
             )

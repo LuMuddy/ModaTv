@@ -39,20 +39,18 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.moda.tv.data.LanConfigServer
 import com.moda.tv.data.LanNet
 import com.moda.tv.R
-import com.moda.tv.data.SaveOutcome
 import com.moda.tv.ui.components.ActionButton
 import com.moda.tv.ui.theme.ModaColors
 import com.moda.tv.ui.theme.TvBody
 import com.moda.tv.ui.theme.TvCaption
 import com.moda.tv.ui.theme.TvHeading
-import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
- * 局域网扫码配置弹窗：左边二维码、右边地址与说明。
+ * 局域网授权弹窗：左边二维码、右边手机访问地址。手机打开后填 8 位授权码，
+ * 兑换与落盘由 LanConfigServer → Auth.pair 完成，本弹窗不接触任何凭据。
  *
  * **生命周期是本组件的核心约束**（用户明确要求"只有打开这个弹窗时才能用"）：
  *   - 进入组合就 [LanConfigServer.start]，离开组合（关弹窗 / 退出设置页 / 返回上一层）
@@ -64,25 +62,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
  */
 @Composable
 fun LanConfigDialog(
-    /** 当前生效的代理网址，用于预填手机端输入框 */
-    url: String,
-    /** 校验 + 探活 + 落盘；返回 Ok 表示已生效 */
-    save: suspend (String) -> SaveOutcome,
     onDismiss: () -> Unit,
-    /** 无法扫码时的兜底：关弹窗并进入设置页的手动编辑（走系统输入法） */
+    /** 无法扫码时的兜底：关弹窗并进入设置页手动输入 8 位授权码（走系统输入法） */
     onManualEdit: () -> Unit,
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
     // 局域网地址在一轮弹窗里固定：网络切换要重开弹窗才生效（与端口绑定一起重来）
     val ip = remember { LanNet.lanIpv4() }
-
-    // StateFlow 而不是 mutableStateOf：onSaved 是在服务端的 IO 协程里回调的，
-    // 走 Flow 收集天然线程安全，电视端不用等 DataStore 那次回环就能立刻看到新值
-    val live = remember { MutableStateFlow(url) }
-    val current by live.collectAsStateWithLifecycle()
-
-    // 设置页自己的 url 变了（例如刚保存完）也要把弹窗里的展示同步过去
-    LaunchedEffect(url) { live.value = url }
 
     var port by remember { mutableStateOf(-1) }
     var startFailed by remember { mutableStateOf(false) }
@@ -91,16 +77,9 @@ fun LanConfigDialog(
     val context = LocalContext.current
     val pageTemplate = remember(context) { LanConfigServer.loadPageTemplate(context) }
 
-    val server = remember(pageTemplate) {
-        LanConfigServer(
-            context = context.applicationContext,
-            currentBase = { live.value },
-            save = save,
-            // 服务端在 IO 线程回调，写 Flow 天然线程安全
-            onSaved = { saved -> live.value = saved },
-            pageTemplate = pageTemplate,
-        )
-    }
+    // 兑换与落盘全在数据层（Auth / AuthSessionStore）手里，弹窗不持任何凭据副本：
+    // 这里只负责把电视端渲染好的页面发出去，手机上看到的就是电视端此刻的真实状态
+    val server = remember(pageTemplate) { LanConfigServer(pageTemplate = pageTemplate) }
 
     // 服务只在弹窗存活期间存在：进入即启动，离开即关闭
     DisposableEffect(lifecycleOwner, server) {
@@ -225,12 +204,9 @@ fun LanConfigDialog(
                         Spacer(Modifier.height(6.dp))
                     }
 
-                    InfoLine(
-                        stringResource(R.string.lan_current_api_base),
-                        current.ifBlank { stringResource(R.string.lan_not_set) },
-                    )
-                    Spacer(Modifier.height(14.dp))
-
+                    // 这里不回显任何凭据：手机页只显示授权状态与到期时间（见
+                    // LanConfigServer.pageHtml），电视端这一列也就没有可展示的敏感值。
+                    // 提示按「有没有局域网」分岔：连不上时给出的下一步是手动输入，而不是扫码。
                     Text(
                         text = stringResource(
                             if (ip == null) R.string.lan_hint_no_lan else R.string.lan_hint_scan,
@@ -238,7 +214,6 @@ fun LanConfigDialog(
                         style = TvBody.copy(fontSize = 17.sp),
                         color = ModaColors.TextDim,
                     )
-
                     Spacer(Modifier.height(20.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         ActionButton(

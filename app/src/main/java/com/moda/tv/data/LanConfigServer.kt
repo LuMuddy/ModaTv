@@ -7,6 +7,7 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import com.moda.tv.R
+import com.moda.tv.model.AppError
 import java.io.BufferedInputStream
 import java.io.InputStream
 import java.io.OutputStream
@@ -24,9 +25,14 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 /**
- * 局域网扫码配置服务。
+ * 局域网授权页服务。
  *
- * 存在的唯一目的：让用户在手机浏览器里改「代理网址」，避免在电视遥控器上敲一条长 URL。
+ * 存在的唯一目的：让用户在手机浏览器里填 8 位一次性授权码，避免在电视遥控器上逐位敲。
+ *
+ * 授权码只是一次性兑换券，不是凭据本身：电视端拿它去兑换 token，token 落进
+ * AuthSessionStore 并回写 [Api.TOKEN]，此后的一切请求只认 token。
+ * 也就是说本类**不保管、也不转发任何凭据**——它只把手机的这一次提交换成「成功 / 失败」，
+ * 再把电视端当前的状态渲染回页面（见 [pageHtml]）。
  *
  * 生命周期是本类最重要的约束，因此**不做任何常驻持有**：
  *   - [start] 由 Dialog 进入组合时调用（绑定 0.0.0.0，端口从 9999 起逐个试）；
@@ -35,29 +41,25 @@ import kotlinx.coroutines.launch
  * 没有前台服务、没有静态单例、没有延时回收——对象被丢弃即彻底消失。
  *
  * 安全边界：只有 Dialog 打开期间端口才在监听，关掉即完全无法访问。
- * 不做 token 校验——能连上（局域网内）就允许改，端口不监听时外部根本无从下手。
+ * 不做额外的访问口令——能连上（局域网内）就能提交授权码，而码本身由后端一次性作废，
+ * 端口不监听时外部根本无从下手。
  */
 class LanConfigServer(
-    /**
-     * 手机端页面的文案（lan_*）从这里取：页面渲染在手机浏览器里，同样是用户可见文案，
-     * 所以本类不持字面量，统一走资源。调用方传 applicationContext 即可。
-     */
-    private val context: Context,
-    /** 读取当前生效的代理网址，用于预填网页输入框 */
-    private val currentBase: () -> String,
-    /**
-     * 手机端提交后的落盘动作。校验 / 探活 / 写入都由调用方负责，本类只管协议。
-     * 返回值带回"规范化后的实际地址"，因此本类不依赖任何全局状态：
-     * 手机上看到的就是真正落盘的那一条，不会出现回显值与生效值不一致。
-     */
-    private val save: suspend (String) -> SaveOutcome,
-    /** 保存成功回调（IO 线程），供电视端 Dialog 实时刷新 */
-    private val onSaved: (String) -> Unit,
     /**
      * 手机端页面模板，来自 assets/index.html（见 [loadPageTemplate]）。
      * 页面文本不在本类里，改样式/文案只改那个文件，Kotlin 侧不动。
      */
     private val pageTemplate: String,
+    /**
+     * 当前授权状态的读取入口。
+     *
+     * 默认走 [Auth.refresh]：token 的唯一真值是 Auth 手里那一份，本类**不自己 create 一个
+     * AuthSessionStore**——同一个 DataStore 文件在一个进程里开出第二个实例会直接抛异常，
+     * 而「页面自己要读状态」根本不是另立一个 store 的理由。
+     */
+    private val status: suspend () -> AuthStatus? = {
+        Auth.refresh()?.let { AuthStatus(authorized = true, expiresAt = it.expiresAt) }
+    },
 ) {
 
     @Volatile
@@ -145,29 +147,64 @@ class LanConfigServer(
 
     private suspend fun route(request: HttpRequest, output: OutputStream) {
         when {
-            request.method == "GET" && (request.path == "/" || request.path == "/index.html") -> {
-                respond(output, 200, HTML_TYPE, pageHtml(current = currentBase(), error = null, saved = null))
-            }
-            request.method == "POST" && request.path == "/save" -> {
-                val raw = request.form["url"].orEmpty()
-                val outcome = when {
-                    raw.isBlank() -> SaveOutcome.Fail(context.getString(R.string.lan_err_url_required))
-                    else -> save(raw)
-                }
-                when (outcome) {
-                    is SaveOutcome.Ok -> {
-                        // 落盘成功：通知电视端 Dialog 换值，手机端显示成功页
-                        onSaved(outcome.base)
-                        respond(output, 200, HTML_TYPE, pageHtml(current = outcome.base, error = null, saved = outcome.base))
-                    }
-                    is SaveOutcome.Fail -> respond(
-                        output, 200, HTML_TYPE,
-                        pageHtml(current = currentBase(), error = outcome.reason, saved = null),
-                    )
-                }
-            }
+            request.method == "GET" && (request.path == "/" || request.path == "/index.html") ->
+                render(output, RESULT_NONE)
+            request.method == "POST" && request.path == "/save" ->
+                save(output, request.form["invite"])
             else -> respond(output, 404, TEXT_TYPE, "404 Not Found")
         }
+    }
+
+    /**
+     * POST /save：8 位授权码 → 兑换 token。
+     *
+     * 落盘只发生在 [Auth.pair] 内部一次（写 store + 回写 [Api.TOKEN]）。
+     * 这里再写一遍就出现两个真值来源：手机上显示「已授权」而实际没落盘、
+     * 或者反过来，只能靠人眼比对两处实现才发现——所以本类只负责判定成功与失败。
+     */
+    private suspend fun save(output: OutputStream, rawInvite: String?) {
+        // 手机键盘与复制粘贴常带空格 / 换行，先去掉再判空：
+        // 否则码前多一个空格会被当成「没填」，用户看着自己填了却被告知未填写
+        val invite = rawInvite.orEmpty().filterNot { it.isWhitespace() }
+        if (invite.isEmpty()) {
+            render(output, RESULT_EMPTY)
+            return
+        }
+        val paired = try {
+            Auth.pair(invite)
+        } catch (e: ApiException) {
+            // 失败必须分得开：码坏了要用户去换新码，存储坏了要用户重试，
+            // 混成一句「授权失败」用户只能瞎试一轮
+            render(output, resultOf(e.error))
+            return
+        } catch (e: Exception) {
+            // 不是 ApiException 就只剩 Auth.pair 内部的本地写入（DataStore）会抛：
+            // 网络失败与业务失败都已被 Api.call 归一成 ApiException
+            render(output, RESULT_STORAGE)
+            return
+        }
+        // 成功即已落盘：直接用刚拿到的这个会话渲染，不再 refresh 一次——
+        // 多一次往返，还可能在这一瞬间读到旧状态，与本页的「授权成功」自相矛盾
+        respond(output, 200, HTML_TYPE, pageHtml(AuthStatus(true, paired.expiresAt), RESULT_SAVED))
+    }
+
+    /** 把 [AppError] 折成页面能显示的一条结果码；分类口径与用户的下一步动作一一对应 */
+    private fun resultOf(error: AppError): String = when (error) {
+        AppError.AuthFailed -> RESULT_AUTH_FAILED
+        AppError.Unauthorized -> RESULT_AUTH_REQUIRED
+        AppError.Storage -> RESULT_STORAGE
+        else -> RESULT_FAILED
+    }
+
+    private suspend fun render(output: OutputStream, result: String) {
+        // 状态读失败不能让整页打不开：这一页的正事是让用户提交授权码，状态行只是参考，
+        // 所以降级成「未授权」继续渲染——本机确实也只是「还没换到有效 token」
+        val current = try {
+            status() ?: AuthStatus(authorized = false)
+        } catch (e: Exception) {
+            AuthStatus(authorized = false)
+        }
+        respond(output, 200, HTML_TYPE, pageHtml(current, result))
     }
 
     // ---------------- 极简 HTTP 解析 ----------------
@@ -186,7 +223,7 @@ class LanConfigServer(
         if (parts.size < 2) return null
         val method = parts[0].uppercase()
         val target = parts[1]
-        // 路由只看路径：没有 token，query 一律忽略
+        // 路由只看路径：授权码在 body 里，query 一律忽略
         val rawPath = target.substringBefore('?')
         val headers = HashMap<String, String>()
         for (i in 1 until lines.size) {
@@ -247,7 +284,7 @@ class LanConfigServer(
             append("HTTP/1.1 ").append(code).append(' ').append(statusText(code)).append("\r\n")
             append("Content-Type: ").append(contentType).append("\r\n")
             append("Content-Length: ").append(bytes.size).append("\r\n")
-            // 手机浏览器不缓存这张页面：每次打开都该看到电视上当前生效的地址
+            // 手机浏览器不缓存这张页面：每次打开都该看到电视端此刻的授权状态
             append("Cache-Control: no-store\r\n")
             append("Connection: close\r\n\r\n")
         }
@@ -265,32 +302,22 @@ class LanConfigServer(
 
     // ---------------- 手机端页面（模板来自 assets/index.html）----------------
 
-    private fun pageHtml(current: String, error: String?, saved: String?): String {
-        val value = htmlEscape(saved ?: current)
-        val banner = when {
-            saved != null ->
-                "<div class=\"ok\">" + htmlEscape(context.getString(R.string.lan_banner_saved)) + "</div>"
-            error != null -> "<div class=\"err\">" + htmlEscape(error) + "</div>"
-            else -> ""
-        }
-        // 占位符替换是字面量替换：value 已做过 HTML 转义，不会被当模板解释
-        return pageTemplate
-            .replace(PLACEHOLDER_BANNER, banner)
-            .replace(PLACEHOLDER_VALUE, value)
-    }
-
-    private fun htmlEscape(s: String): String = buildString(s.length + 16) {
-        for (c in s) {
-            when (c) {
-                '&' -> append("&amp;")
-                '<' -> append("&lt;")
-                '>' -> append("&gt;")
-                '"' -> append("&quot;")
-                '\'' -> append("&#39;")
-                else -> append(c)
-            }
-        }
-    }
+    /**
+     * 把模板里的三个槽位换成「状态码 + 一个数字」，然后整页发出去。
+     *
+     * 为什么只发状态码不发句子：会显示在电视屏幕上的中文必须走 string 资源（代码里不留中文字面量），
+     * 而这张页面是电视渲染给手机浏览器看的，句子归 index.html 一处维护——数据层只表态
+     * 「哪种结果」，页面负责说人话，两端就不会各写一份迟早对不上的文案。
+     *
+     * 为什么这里没有 HTML 转义：三个值全部取自闭集常量与一个 Long，
+     * 不含用户输入、不含 invite、**更不含 token**——页面从头到尾拿不到任何凭据，
+     * 也就没有「哪一处忘了转义就把凭据漏进 HTML」这条失败路径。
+     */
+    private fun pageHtml(current: AuthStatus, result: String): String =
+        pageTemplate
+            .replace(PLACEHOLDER_STATE, if (current.authorized) STATE_AUTHORIZED else STATE_UNAUTHORIZED)
+            .replace(PLACEHOLDER_EXPIRES, epochMillis(current.expiresAt).toString())
+            .replace(PLACEHOLDER_RESULT, result)
 
     companion object {
         /** assets 下的页面模板文件名 */
@@ -300,7 +327,7 @@ class LanConfigServer(
          * 读取 assets/index.html 作为手机端页面模板。
          *
          * 读失败（资源被裁掉、包体异常）时就地拼一张最简页面：
-         * 配置页是唯一的改地址入口，宁可少样式也不能给用户一张白页。
+         * 授权页是唯一的填码入口，宁可少样式也不能给用户一张白页。
          */
         fun loadPageTemplate(context: Context): String = try {
             context.assets.open(PAGE_ASSET).bufferedReader(Charsets.UTF_8).use { it.readText() }
@@ -321,19 +348,50 @@ class LanConfigServer(
         private const val TEXT_TYPE = "text/plain; charset=utf-8"
 
         /**
-         * assets/index.html 里的占位符；模板与替换两侧靠它对齐。
-         * 提示条写成 HTML 注释，这样单独用浏览器打开模板时不会看到它。
+         * assets/index.html 里的三个占位符：模板与 [pageHtml] 的两侧靠这三对常量对齐。
+         * 值写成 body 的 data 属性值而不是 HTML 注释，是因为页面只需要「读一个状态码」，
+         * 不需要在服务端拼 HTML 片段。
          */
-        private const val PLACEHOLDER_BANNER = "<!--BANNER_SLOT-->"
-        private const val PLACEHOLDER_VALUE = "__VALUE__"
+        private const val PLACEHOLDER_STATE = "__AUTH_STATE__"
+        private const val PLACEHOLDER_EXPIRES = "__EXPIRES_AT__"
+        private const val PLACEHOLDER_RESULT = "__RESULT__"
+
+        /** 当前状态（data-auth-state）：这一台电视此刻有没有有效 token */
+        private const val STATE_AUTHORIZED = "authorized"
+        private const val STATE_UNAUTHORIZED = "unauthorized"
+
+        /** 本次提交结果（data-result）：没提交过就是空串，页面据此不显示提示条 */
+        private const val RESULT_NONE = ""
+        private const val RESULT_EMPTY = "empty"
+        private const val RESULT_SAVED = "saved"
+        private const val RESULT_AUTH_FAILED = "auth_failed"
+        private const val RESULT_AUTH_REQUIRED = "auth_required"
+        private const val RESULT_STORAGE = "storage"
+        private const val RESULT_FAILED = "failed"
     }
 }
 
-/** 保存结果：成功带回规范化后的地址，失败带回给用户看的原因 */
-sealed interface SaveOutcome {
-    data class Ok(val base: String) : SaveOutcome
-    data class Fail(val reason: String) : SaveOutcome
-}
+/**
+ * 页面要显示的授权状态。
+ *
+ * 刻意只有这两个字段：token、邀请码、绑定 IP 都不进来——页面拿不到的东西就不可能漏出去，
+ * 这条约束写成类型，比在渲染处「小心别打印 token」可靠。
+ */
+data class AuthStatus(
+    val authorized: Boolean,
+    /** 到期时间；0 = 不限期（后端用 0 表示不过期） */
+    val expiresAt: Long = 0L,
+)
+
+/**
+ * 后端 expires_at 是秒（PHP 的 time()），本地落盘习惯写毫秒，两种口径都认：
+ * 1e11 是 1973 年（按毫秒算）与公元 5138 年（按秒算）的分界，小于它只能是秒。
+ * 认错单位页面会显示 1970 年——那比不显示更让人以为授权坏了，所以宁可按量级判一次。
+ */
+private const val EPOCH_MS_THRESHOLD = 100_000_000_000L
+
+private fun epochMillis(raw: Long): Long =
+    if (raw > 0 && raw < EPOCH_MS_THRESHOLD) raw * 1000 else raw
 
 /** 局域网地址 / 二维码两项与 HTTP 协议无关的杂活 */
 object LanNet {
