@@ -149,6 +149,14 @@ jobs:
         if: github.ref_type == 'tag'
         run: |
           set -euo pipefail
+          # 手写优先：docs/release-notes/<tag>.md 存在就直接用它。
+          # 自动生成只能列提交标题，而「这次到底改了什么、用户要不要动手」需要人写；
+          # 仓库里没有这一版的手写文件时才退回自动列表。
+          if [ -f "docs/release-notes/$GITHUB_REF_NAME.md" ]; then
+            cp "docs/release-notes/$GITHUB_REF_NAME.md" RELEASE_NOTES.md
+            cat RELEASE_NOTES.md
+            exit 0
+          fi
           PREV="$(git tag --sort=-creatordate | grep -vx "$GITHUB_REF_NAME" | head -n 1 || true)"
           if [ -n "$PREV" ]; then
             RANGE="$PREV..$GITHUB_SHA"
