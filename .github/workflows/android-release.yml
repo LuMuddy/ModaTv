@@ -184,5 +184,21 @@ jobs:
           # 名字必须是 tag 本身：客户端从 atom 的 <title> 里剥掉前导 v 得到版本号，
           # 不写 name 就依赖 action 的默认值，默认值变了客户端会静默读不到。
           name: ${{ github.ref_name }}
-          body_path: RELEASE_NOTES.md
           files: app/build/outputs/apk/release/ModaTv*.apk
+
+      # 正文不用 action 的 body_path：实测更新一个**已存在**的 release 时它不覆盖正文
+      # （v1.0.2 重发那次资产换了、正文还是旧的 "Full Changelog"），所以这里自己 PATCH 一次。
+      # action 只负责建 release + 传资产，正文这一条路径只有这里一处，好排查。
+      - name: 写入发版说明
+        if: github.ref_type == 'tag'
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -c 'import json;print(json.dumps({"body":open("RELEASE_NOTES.md",encoding="utf-8").read()}))' > /tmp/body.json
+          curl -sS --fail-with-body -X PATCH \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" \
+            -d @/tmp/body.json \
+            | python3 -c 'import json,sys; print("--- 已写入的正文 ---"); print(json.load(sys.stdin)["body"])'
