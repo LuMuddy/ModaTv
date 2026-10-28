@@ -25,8 +25,10 @@ android {
         applicationId = "com.moda.tv"
         minSdk = 23
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        // 发版时由 CI 从 git tag 推导，用 -Pmodatv.versionName / -Pmodatv.versionCode 覆盖；
+        // 本地不带 -P 构建就走这里的默认值，所以不必为了发一次版先改代码再提交一次。
+        versionCode = (project.findProperty("modatv.versionCode") as String?)?.toIntOrNull() ?: 1
+        versionName = project.findProperty("modatv.versionName") as String? ?: "1.0.0"
 
         buildConfigField("String", "API_BASE", literal(secret("modatv.apiBase")))
         buildConfigField("String", "DEVICE_TOKEN", literal(secret("modatv.deviceToken")))
@@ -45,9 +47,28 @@ android {
         }
     }
 
+    /**
+     * 签名材料和热词凭据走同一条路：只从 local.properties 读，那文件永远不进仓库。
+     * 没写 modatv.keystoreFile 时不建 signingConfig，assembleRelease 会出
+     * app-release-unsigned.apk —— 装不上但编得过，本地只想看看 release 产物时不必先造密钥。
+     * CI 上必须签名：workflow 用 apksigner 校验产物，签没签由构建结果说话，不靠约定。
+     */
+    val releaseKeystore = secret("modatv.keystoreFile")
+    signingConfigs {
+        if (releaseKeystore.isNotBlank()) {
+            create("release") {
+                storeFile = rootProject.file(releaseKeystore)
+                storePassword = secret("modatv.keystorePassword")
+                keyAlias = secret("modatv.keyAlias")
+                keyPassword = secret("modatv.keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
