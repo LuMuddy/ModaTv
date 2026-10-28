@@ -26,12 +26,30 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
-
       - uses: gradle/actions/setup-gradle@v4
 
+      # 不用 android-actions/setup-android：v1.0.1 那次 CI 就死在它那一步
+      # （job 记录：第 4 步 failure，第 5 步起全部 skipped，连「写入 local.properties」
+      # 都没走到——所以那次失败跟签名密钥无关，Secrets 配没配至今未被验证过）。
+      # 日志要登录才能拉，具体原因没有逐行确认，最可能是 runner 把 node20 的 action
+      # 强制升到 node24 那波兼容性断裂。ubuntu-latest 镜像自带 Android SDK
+      # （ANDROID_HOME 已设、cmdline-tools 在 PATH），直接用 sdkmanager 装组件，
+      # 就少一个会随 runner 升级悄悄失效的第三方 action。
       - name: 安装 SDK 组件
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          [ -n "$SDK" ] || { echo "::error::runner 没有 ANDROID_HOME，镜像变了？"; exit 1; }
+          # PATH 里没有就退回 SDK 自带的那份，不靠某个 action 帮忙配 PATH
+          SDKMGR="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMGR" ]; then
+            SDKMGR="$(ls "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | sort -V | tail -n 1)"
+          fi
+          [ -n "$SDKMGR" ] || { echo "::error::找不到 sdkmanager"; exit 1; }
+          # yes | ... 被 SIGPIPE 收尾，pipefail 下管道会以 141 结束，必须显式兜住
+          ( yes | "$SDKMGR" --sdk_root="$SDK" --licenses > /dev/null ) || true
+          "$SDKMGR" --sdk_root="$SDK" "platforms;android-35" "build-tools;35.0.0"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
 
       # 签名密钥统一走 local.properties（和本地开发同一条注入路径），
       # 不在 build.gradle.kts 里另开一条环境变量通道：两套来源迟早会分叉。
