@@ -33,8 +33,9 @@ jobs:
       - name: 安装 SDK 组件
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
-      # 密钥与热词凭据统一走 local.properties（和本地开发同一条注入路径），
+      # 签名密钥统一走 local.properties（和本地开发同一条注入路径），
       # 不在 build.gradle.kts 里另开一条环境变量通道：两套来源迟早会分叉。
+      # 热词凭据是代码常量（data/Repo.kt），到这里已经没有需要注入的东西。
       # runner 用完即弃，这份文件不会进入任何提交或 artifact。
       - name: 写入 local.properties
         env:
@@ -42,8 +43,6 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-          HOT_WORDS_APP_ID: ${{ secrets.HOT_WORDS_APP_ID }}
-          HOT_WORDS_APP_KEY: ${{ secrets.HOT_WORDS_APP_KEY }}
         run: |
           set -euo pipefail
           if [ -z "${KEYSTORE_BASE64:-}" ]; then
@@ -57,8 +56,6 @@ jobs:
           write_prop modatv.keystorePassword "$KEYSTORE_PASSWORD"
           write_prop modatv.keyAlias "$KEY_ALIAS"
           write_prop modatv.keyPassword "$KEY_PASSWORD"
-          write_prop modatv.hotWordsAppId "$HOT_WORDS_APP_ID"
-          write_prop modatv.hotWordsAppKey "$HOT_WORDS_APP_KEY"
 
       - name: 构建 release APK
         run: |

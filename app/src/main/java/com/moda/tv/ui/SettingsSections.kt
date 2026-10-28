@@ -1,7 +1,5 @@
 package com.moda.tv.ui
 
-import android.util.Log
-import androidx.activity.compose.BackHandler
 import androidx.annotation.StringRes
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -20,9 +18,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -35,28 +30,16 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -72,11 +55,9 @@ import com.moda.tv.data.local.PlayerCore
 import com.moda.tv.data.local.PlayerSettings
 import com.moda.tv.data.local.PlayerSettingsStoreImpl
 import com.moda.tv.data.local.PlayerSpeedOptions
-import com.moda.tv.model.AppError
 import com.moda.tv.ui.components.TvColumnFocusScroll
 import com.moda.tv.ui.components.TvColumnFocusScroller
 import com.moda.tv.ui.components.TvFirstFocus
-import com.moda.tv.ui.components.appErrorText
 import com.moda.tv.ui.player.PlayerEngines
 import com.moda.tv.ui.theme.ModaColors
 import com.moda.tv.ui.theme.TvBody
@@ -85,41 +66,14 @@ import com.moda.tv.ui.theme.TvTitle
 import kotlinx.coroutines.launch
 
 /**
- * 子页的一条操作反馈：成功用普通色，失败用 Danger，肉眼可分辨。
- *
- * 失败有两种来源：[text] 是实现方已经落好资源的成品文案（授权码兑换的具体原因），
- * [error] 则是一个逃出回调的异常——异常原文只进日志，这里只留错误码，
- * 文案到渲染那一刻再由 [appErrorText] 按当前语言取（提前拼成字符串等于把语言烤死）。
- */
-internal data class Notice(
-    /** 已解析好的文案：成功提示，或实现方给出的失败原因；与 [error] 二者取其一 */
-    val text: String = "",
-    val failed: Boolean,
-    val error: AppError? = null,
-)
-
-/**
- * 设置页的异常只进日志，不上屏。
- *
- * 从前这里直接把 `e.message` 当提示：那是给排错看的原文（Java 英文、类名与参数都会漏出去），
- * 与「错误码 → 文案只有 ErrorText 一个出口」冲突，而且在英文系统上照样是中英混排。
- * [code] 由调用点给：授权码兑换失败与本地存储故障用户能做的事不同，
- * 前者是「再试一次」，后者是「存储坏了」（AppError.Storage）。全部落成 Unknown
- * 会把后者说成「加载失败，请稍后重试」——一句指向网络的错话。
- */
-private fun logSettingsFailure(what: String, e: Throwable, code: AppError): AppError {
-    Log.w("Settings", "$what 失败", e)
-    return code
-}
-
-/**
  * 「清空」类操作的确认意图：标题、警示文案与完成提示跟着它走。
  * 存资源 id 而不是字符串：枚举一旦把文案固化在构造里，切换系统语言时这几句不会跟着变。
  */
 internal enum class PendingClear(
     @param:StringRes val titleRes: Int,
     @param:StringRes val messageRes: Int,
-    @param:StringRes val doneTextRes: Int,
+    /** 完成提示；null = 确认之后整屏就换了（清除授权会直接退回授权门），没必要再说一句 */
+    @param:StringRes val doneTextRes: Int?,
 ) {
     History(
         titleRes = R.string.clear_history_title,
@@ -135,6 +89,19 @@ internal enum class PendingClear(
         titleRes = R.string.clear_search_title,
         messageRes = R.string.clear_search_message,
         doneTextRes = R.string.clear_search_done,
+    ),
+    Completed(
+        // 标题直接复用「已看完」页那一句（lib_done_clear_title，来自 strings_library）：
+        // 同一个动作在两个入口各写一遍文案，早晚会有一个入口先改瞎
+        titleRes = R.string.lib_done_clear_title,
+        messageRes = R.string.clear_completed_message,
+        doneTextRes = R.string.clear_completed_done,
+    ),
+    Auth(
+        // 与「清空」共用一个弹窗：都是不可撤销、都要二次确认，另造一个弹窗只是多一套焦点栈
+        titleRes = R.string.clear_auth_title,
+        messageRes = R.string.clear_auth_message,
+        doneTextRes = null,
     ),
 }
 
@@ -345,26 +312,6 @@ internal fun PlaybackSettingsSection(holder: PlayerSettingsHolder) {
                     holder.apply(settings.copy(danmakuEnabled = !settings.danmakuEnabled))
                 },
             )
-
-            CyclingRow(
-                label = stringResource(R.string.settings_playback_skip_intro),
-                value = onOff(settings.skipIntroEnabled),
-                hint = stringResource(R.string.settings_playback_skip_intro_hint),
-                modifier = Modifier.then(columnFocus.itemModifier(4)),
-                onCycle = {
-                    holder.apply(settings.copy(skipIntroEnabled = !settings.skipIntroEnabled))
-                },
-            )
-
-            CyclingRow(
-                label = stringResource(R.string.settings_playback_skip_outro),
-                value = onOff(settings.skipOutroEnabled),
-                hint = stringResource(R.string.settings_playback_skip_outro_hint),
-                modifier = Modifier.then(columnFocus.itemModifier(5)),
-                onCycle = {
-                    holder.apply(settings.copy(skipOutroEnabled = !settings.skipOutroEnabled))
-                },
-            )
         }
     }
 }
@@ -374,8 +321,8 @@ internal fun PlaybackSettingsSection(holder: PlayerSettingsHolder) {
 /**
  * 授权状态只有一句话：已授权 / 未授权。
  *
- * 到期时间、绑定 IP、用的是哪张授权码都刻意不显示：它们只解释「这份凭据长什么样」，
- * 不决定用户能做什么；过期与否也不再需要用户自己盯——后台判死时客户端会自己回到授权门。
+ * 剩余时长、到期时刻都刻意不显示：它们只解释「这份凭据长什么样」，不决定用户能做什么；
+ * 过期与否也不再需要用户自己盯——后台判死时客户端会自己回到授权门。
  * 屏幕上多一行术语，就多一次「这数字什么意思」的追问。
  */
 @Composable
@@ -386,252 +333,123 @@ internal fun authStatusText(session: AuthSession?): String = if (session == null
 }
 
 /**
- * 网络与数据子页：授权码（含编辑态）/ 授权状态 / 三项清空。
+ * 登录账号那一行的值：有账号名时「已授权 · 账号名」，没有就只报「已授权」。
  *
- * 屏幕自身不碰网络也不碰凭据：兑换与落盘全在回调的实现方（SettingsGroupRoute → TvViewModel.authorize）
- * 手里，这里只把结果渲染出来。授权成功后 [session] 会从上层回灌，
- * 本页随之从「未授权 + 编辑入口」变成「已授权 + 状态展示」，不需要重建页面。
+ * 只挂账号名，不挂券号与到期时刻：账号名是唯一能和后台记录对上的信息，
+ * 另两个只解释「这份凭据长什么样」，不决定用户能做什么，屏幕上一多就要解释一串术语。
+ */
+@Composable
+private fun authAccountText(session: AuthSession?): String = when {
+    session == null -> stringResource(R.string.settings_auth_unauthorized)
+    // 服务端没给账号名（旧会话 / acc 缺失）时只报状态，不编一个空值出来
+    session.accName.isBlank() -> stringResource(R.string.settings_auth_authorized)
+    else -> stringResource(R.string.settings_auth_authorized_account, session.accName)
+}
+
+/**
+ * 网络与数据子页：登录账号（只读）+ 四项数据清理 + 清除授权。
  *
- * 没有「清除授权」：凭据一旦换到就用到失效为止，本地作废凭据的半截语义
- * （删盘但内存里 token 还在）只会让下一次 refresh 把它复活，见 Auth.refresh。
+ * 登录账号那一行**只显示、不可操作**：扫码 / 填码只有一个入口——启动时的授权门
+ * （AuthGateScreen），本页再放一个入口就是同一个动作的第二种说法。代价是没有就地换号，
+ * 凭据被服务端作废时用户只能下次启动重新扫码；这是产品定的取舍，不要再把入口加回来。
+ *
+ * 屏幕自身不碰网络也不碰凭据：授权态由上层回灌的 [session] 决定，本页只把状态渲染出来。
+ *
+ * 「清除授权」是这一页唯一的账号动作：真删（[TvViewModel.signOut] 走 Auth.signOut 清内存再清盘，
+ * 然后会话置空、界面自己退回授权门），不是"本地装作未授权"——半截作废只会让下一次 refresh 把
+ * token 复活（见 Auth.signOut 的顺序说明），那种状态下用户既进不去也换不了号。
  */
 @Composable
 internal fun NetworkSettingsSection(
     session: AuthSession?,
-    onAuthorize: suspend (String) -> String?,
     onClearHistory: () -> Unit,
     onClearFavorites: () -> Unit,
     onClearSearchHistory: () -> Unit,
+    onClearCompleted: () -> Unit,
+    onClearAuth: () -> Unit,
 ) {
-    var editing by remember { mutableStateOf(false) }
-    var draft by remember { mutableStateOf("") }
-    var checking by remember { mutableStateOf(false) }
-    var notice by remember { mutableStateOf<Notice?>(null) }
-    // 三项「清空」都是不可撤销的批量删除，点一下先弹确认，确认后才真正清除
+    // 五项（四项清数据 + 清除授权）都是不可撤销的，点一下先弹确认，确认后才真正执行
     var pendingClear by remember { mutableStateOf<PendingClear?>(null) }
+    // 清空后的反馈：文案在弹窗确认那一刻就按当前语言取好（见 PendingClear.doneTextRes）
+    var notice by remember { mutableStateOf<String?>(null) }
 
-    val scope = rememberCoroutineScope()
-    val keyboard = LocalSoftwareKeyboardController.current
-    val fieldFocus = remember { FocusRequester() }
-    // 首焦点必须落在**当前这一屏第一行可聚焦的**东西上，也就是「授权码」行：
-    // 未授权时它是编辑入口，已授权时它是状态展示 + 换码入口，两种态都可聚焦，
-    // 所以两种态都把 requester 挂在它身上。
+    // 首焦点落在这一屏第一行**可聚焦**的内容上：授权码行改成只读之后，它就是第一项清空。
+    // 不给的话从菜单页进来屏幕上没有任何白圈，用户得先乱按一下方向键找光标。
+    // 抢焦点统一交给 SettingsSectionScaffold 里的 TvFirstFocus，这里只准备 requester。
     val firstFocus = remember { FocusRequester() }
-    val authorized = session != null
-    // commit()/onClick 都是普通函数与 lambda，里面不能再调 @Composable 的 stringResource，
-    // 所以固定文案在这里先取好；失败文案不预取，等渲染时再按来源翻译（见 Notice）
-    val savedText = stringResource(R.string.settings_auth_saved)
-    val invalidCodeText = stringResource(R.string.settings_auth_invalid)
-
-    // 编辑态自己一层返回：只收起编辑（等同取消），不退出子页。
-    // 全应用只有 AppRoot 那一条 BackHandler，没有这一层时编辑中按返回会连子页一起退掉、
-    // 刚敲的草稿全丢。enabled 只在编辑态为 true：收起之后返回键自然交还给 AppRoot 的总链，
-    // 「返回逐层退出」的语义没有被改掉，只是多插了一层。
-    BackHandler(enabled = editing) {
-        editing = false
-        draft = ""
-        notice = null
-    }
-
-    // 进入编辑才拉输入法：遥控器没有键盘，不显式 show() 的话模拟器上只是个空框
-    LaunchedEffect(editing) {
-        if (editing) {
-            withFrameNanos { }
-            runCatching { fieldFocus.requestFocus() }
-            keyboard?.show()
-        } else {
-            keyboard?.hide()
-        }
-    }
-
-    // 退出编辑、以及授权态翻转（兑换成功），都要把焦点交回第一行可聚焦的内容：
-    // 这些节点整块在 if (editing) / if (session == null) 里，收起时它们一起离开组合，
-    // 没人接的话遥控器按方向键完全没有反应、屏幕上也不再白框。
-    // key 带上 authorized：授权翻转会重排这一屏的行（状态行换 onValue），落点要重新抢一次。
-    TvFirstFocus(requester = if (editing) null else firstFocus, key = editing to authorized)
-
-    fun startEdit() {
-        draft = ""
-        notice = null
-        editing = true
-    }
-
-    fun commit() {
-        if (checking) return
-        // 与授权门一致：大写 + 只留字母数字 + 必须 8 位，不合法就不发请求
-        val code = draft.uppercase().filter { c -> c in 'A'..'Z' || c in '0'..'9' }
-        if (code.length != AUTH_CODE_LENGTH) {
-            notice = Notice(invalidCodeText, failed = true)
-            return
-        }
-        checking = true
-        scope.launch {
-            // 失败有两条来源，必须分开接：实现方给的是成品文案（VM 已按当前语言渲染），
-            // 逃出来的异常只留错误码——e.message 是给排错看的原文，不许上屏（见 logSettingsFailure）。
-            // 空输入的判断也归实现方（TvViewModel.authorize），这里不重复判一遍。
-            var failureText: String? = null
-            var failureCode: AppError? = null
-            try {
-                failureText = onAuthorize(code)
-            } catch (e: Exception) {
-                failureCode = logSettingsFailure("授权码兑换", e, AppError.Unknown)
-            }
-            checking = false
-            if (failureText == null && failureCode == null) {
-                // 生效后才退出编辑态：失败留在框里，用户能就地改而不是从头再来
-                editing = false
-                draft = ""
-                notice = Notice(savedText, failed = false)
-            } else {
-                notice = Notice(text = failureText.orEmpty(), failed = true, error = failureCode)
-            }
-        }
-    }
 
     SettingsSectionScaffold(
         title = stringResource(SettingsSectionId.Network.titleRes),
         subtitle = stringResource(R.string.settings_network_subtitle),
         firstFocus = firstFocus,
     ) { columnFocus ->
+        // 反馈行挂在卡片之外、所有跟焦行之下（它不可聚焦，没有焦点事件能把视口带到它身上），
+        // 所以内容一变就把视口推到尾部：否则"点完确认什么也没看见"。
+        LaunchedEffect(notice) {
+            if (notice != null) columnFocus.revealTail()
+        }
         SectionCard {
-            if (session == null) {
-                // 未授权：这一行就是入口，点进去在它下面展开输入框。
-                // 手动输入是唯一的授权入口，所以这一行必须始终可点、随时可编辑：
-                // 遥控器上没有第二条能让用户把 8 位码敲进来的路。
-                SettingRow(
-                    label = stringResource(R.string.settings_auth_code),
-                    value = stringResource(R.string.settings_auth_unauthorized),
-                    chevron = true,
-                    modifier = Modifier.then(columnFocus.itemModifier(0)),
-                    focusRequester = firstFocus,
-                    onClick = { startEdit() },
-                )
-            } else {
-                // 已授权：这一行报状态（授权码 + 到期时间 + 绑定 IP），但它**仍然可点**。
-                //
-                // 没有「清除授权」之后，这里是唯一的手动换码入口：凭据在服务端失效时
-                // （到期 / 换密钥），首页只会说「去设置填授权码」，而只读的一行会把
-                // 用户钉死在「已授权但用不了」上——电视上又没有第二条重来的路。
-                // 点进去直接填新码，兑换成功即覆盖旧 token（Auth.pair 本就是替换语义）。
-                SettingRow(
-                    label = stringResource(R.string.settings_auth_code),
-                    value = authStatusText(session),
-                    chevron = true,
-                    modifier = Modifier.then(columnFocus.itemModifier(0)),
-                    focusRequester = firstFocus,
-                    onClick = { startEdit() },
-                )
-            }
+            // 只读行：不给 onClick、不画箭头 —— SettingRow 在 onClick 为空时就是个裸 Box，
+            // 遥控器不会停在它上面，也就不会再多出一行"按了没反应"的格子。
+            SettingRow(
+                label = stringResource(R.string.settings_auth_account),
+                // 右侧 =「已授权 · 账号名」：账号名是唯一能和后台记录对上的信息；
+                // 券号与到期时刻都不挂，它们只解释"凭据长什么样"，不决定用户能做什么
+                value = authAccountText(session),
+                modifier = Modifier.then(columnFocus.itemModifier(0)),
+            )
 
-            if (editing) {
-                // 编辑区是「授权码」这一行的下挂内容，紧跟它、不再额外吃行距，
-                // 这样它和上面那行的关系看起来就是「展开」而不是「另起一段」。
-                // 左右补 RingRoom：编辑区本身不聚焦，但它要和外层卡片的行左边缘对齐。
-                Column(
-                    // 编辑区整块作为一个跟焦行（下标 1）：它随编辑态出现/消失，
-                    // 里面的输入框与授权/取消都在这块之内，跟焦只需把它整块摆进视口。
-                    Modifier.padding(horizontal = RingRoom).then(columnFocus.itemModifier(1)),
-                ) {
-                    val focusManager = LocalFocusManager.current
-                    BasicTextField(
-                        value = draft,
-                        // 缓冲区照收；合法性由按键拦截 + 提交前闸门把守（见 AuthGateScreen 同类注释）
-                        onValueChange = { draft = it },
-                        // 小写显示成大写：只改渲染，不动缓冲区
-                        visualTransformation = UppercaseTransformation,
-                        singleLine = true,
-                        textStyle = TextStyle(fontSize = 19.sp, color = ModaColors.Text),
-                        cursorBrush = SolidColor(ModaColors.AccentSoft),
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                        keyboardActions = KeyboardActions(onDone = { commit() }),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            // 输入框底色比卡片再亮一档：它就在卡片内部，
-                            // 用同一个 Surface 色会和背景糊成一片，看不出这里能输入
-                            .background(ModaColors.SurfaceHigh)
-                            .border(2.dp, ModaColors.AccentSoft, RoundedCornerShape(10.dp))
-                            .padding(horizontal = 16.dp, vertical = 14.dp)
-                            .focusRequester(fieldFocus)
-                            .onPreviewKeyEvent { event ->
-                                if (event.type != KeyEventType.KeyDown) {
-                                    return@onPreviewKeyEvent false
-                                }
-                                when (event.key) {
-                                    Key.DirectionUp -> focusManager.moveFocus(FocusDirection.Up)
-                                    Key.DirectionDown -> focusManager.moveFocus(FocusDirection.Down)
-                                    // 确认键等于「授权」：电视上敲完码直接按确认是最短路径
-                                    Key.DirectionCenter, Key.Enter -> { commit(); true }
-                                    // 只放行字母与数字，符号就地吃掉：不碰文本缓冲区，
-                                    // 因此不影响任何输入法的合成状态（见 AuthGateScreen 同类注释）
-                                    // 满 8 位后一起吃掉字母数字：授权码就是 8 位，
-                                    // 多出来的第 9 个字符只会在提交时变成一条「码无效」的误导文案。
-                                    // 在按键层拒绝而不改写缓冲区，理由同 AuthGateScreen（IME 合成区）
-                                    else -> {
-                                        val ch = event.nativeKeyEvent.unicodeChar.toChar()
-                                        val printable = !ch.isISOControl() && ch != Char.MIN_VALUE
-                                        printable && (
-                                            draft.length >= AUTH_CODE_LENGTH ||
-                                                !(ch in 'A'..'Z' || ch in 'a'..'z' || ch in '0'..'9')
-                                            )
-                                    }
-                                }
-                            },
-                    )
-                    Row {
-                        SettingRow(
-                            label = stringResource(
-                                if (checking) R.string.common_verifying else R.string.settings_auth_submit,
-                            ),
-                            value = stringResource(R.string.common_confirm),
-                            chevron = true,
-                            modifier = Modifier.weight(1f),
-                            onClick = { if (!checking) commit() },
-                        )
-                        SettingRow(
-                            label = stringResource(R.string.common_cancel),
-                            value = stringResource(R.string.common_discard),
-                            chevron = true,
-                            modifier = Modifier.weight(1f),
-                            onClick = { editing = false; draft = ""; notice = null },
-                        )
-                    }
-                }
-            }
-
-            // 数据清理：三项都是不可撤销的批量删除，逐项二次确认
+            // 数据清理：四项都是不可撤销的批量删除，逐项二次确认
             SettingRow(
                 label = stringResource(R.string.settings_network_clear_history),
                 value = stringResource(R.string.common_clear),
                 chevron = true,
-                modifier = Modifier.then(columnFocus.itemModifier(2)),
+                modifier = Modifier.then(columnFocus.itemModifier(1)),
+                focusRequester = firstFocus,
                 onClick = { pendingClear = PendingClear.History },
             )
             SettingRow(
                 label = stringResource(R.string.settings_network_clear_favorites),
                 value = stringResource(R.string.common_clear),
                 chevron = true,
-                modifier = Modifier.then(columnFocus.itemModifier(3)),
+                modifier = Modifier.then(columnFocus.itemModifier(2)),
                 onClick = { pendingClear = PendingClear.Favorites },
             )
             SettingRow(
                 label = stringResource(R.string.settings_network_clear_search),
                 value = stringResource(R.string.common_clear),
                 chevron = true,
-                modifier = Modifier.then(columnFocus.itemModifier(4)),
+                modifier = Modifier.then(columnFocus.itemModifier(3)),
                 onClick = { pendingClear = PendingClear.SearchHistory },
             )
-            HintText(stringResource(R.string.settings_auth_hint))
+            SettingRow(
+                label = stringResource(R.string.settings_network_clear_completed),
+                value = stringResource(R.string.common_clear),
+                chevron = true,
+                modifier = Modifier.then(columnFocus.itemModifier(4)),
+                onClick = { pendingClear = PendingClear.Completed },
+            )
+            // 清除授权排在最末：它是全页唯一会把自己锁回门里的动作，
+            // 与上面几行"清数据"混排时越靠后越不容易被连按误触（而且还要过一道确认）。
+            // 只在真的已授权时出现：未授权时它没有任何东西可清，多一行就是多一次误按。
+            if (session != null) {
+                SettingRow(
+                    label = stringResource(R.string.settings_network_clear_auth),
+                    value = stringResource(R.string.common_clear),
+                    chevron = true,
+                    modifier = Modifier.then(columnFocus.itemModifier(5)),
+                    onClick = { pendingClear = PendingClear.Auth },
+                )
+            }
         }
 
         // 操作反馈落在滚动内容的末尾：它可能来自这一页的任意一处，
         // 挂在某一行内部会让别处触发的消息跑到看不见的位置。
-        notice?.let { n ->
+        notice?.let { text ->
             Text(
-                // 成功句是固定文案；失败只带错误码，必须此刻按当前语言渲染
-                if (n.error != null) appErrorText(n.error) else n.text,
+                text,
                 style = TvBody.copy(fontSize = 18.sp),
-                color = if (n.failed) ModaColors.Danger else ModaColors.AccentSoft,
+                color = ModaColors.AccentSoft,
                 modifier = Modifier.padding(top = 8.dp),
             )
         }
@@ -640,7 +458,7 @@ internal fun NetworkSettingsSection(
     // 清空确认：三项共用同一个弹窗，标题、文案与真正执行的动作都由 pendingClear 决定
     pendingClear?.let { pending ->
         // onConfirm 是普通 lambda，取不到 stringResource，所以在组合里先解析好
-        val doneText = stringResource(pending.doneTextRes)
+        val doneText = pending.doneTextRes?.let { stringResource(it) }
         ClearConfirmDialog(
             title = stringResource(pending.titleRes),
             message = stringResource(pending.messageRes),
@@ -650,8 +468,10 @@ internal fun NetworkSettingsSection(
                     PendingClear.History -> onClearHistory()
                     PendingClear.Favorites -> onClearFavorites()
                     PendingClear.SearchHistory -> onClearSearchHistory()
+                    PendingClear.Completed -> onClearCompleted()
+                    PendingClear.Auth -> onClearAuth()
                 }
-                notice = Notice(doneText, failed = false)
+                if (doneText != null) notice = doneText
             },
             onDismiss = { pendingClear = null },
         )
@@ -815,7 +635,7 @@ internal fun speedLabelOf(value: Float): String =
         ?: PlayerSpeedOptions.first().label
 
 /**
- * 一档一档循环的设置行（内核 / 软硬解 / 倍速 / 跳片头片尾）。
+ * 一档一档循环的设置行（内核 / 软硬解 / 倍速 / 弹幕开关）。
  *
  * 为什么用「按确认键循环」而不是弹一个选择面板：
  * 这几个项的候选只有 2~6 个，弹面板会让遥控器多两次按键、多一层焦点栈，

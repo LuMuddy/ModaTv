@@ -16,23 +16,26 @@ import kotlinx.coroutines.flow.map
 import org.json.JSONObject
 
 /**
- * 一次授权会话：授权码兑换回来的 token，加上服务端给的到期 / 绑定信息。
+ * 一次授权会话：微信扫码登录换回来的 token，加上服务端给的账号信息。
  *
- * 为什么 token 是唯一必需字段：授权码只是兑换券，本地长期持有的是 token；
- * 其余字段只用于展示（还剩多久、绑在哪个 IP、当初用的哪个码），缺了不影响发请求，
- * 所以全部带默认值，[authorized] 只看 token。
+ * 为什么 token 是唯一必需字段：其余字段只用于展示（谁登录了、还剩多久），
+ * 缺了不影响发请求，所以全部带默认值，[authorized] 只看 token。
+ *
+ * 设备绑定时代的绑定 IP / 设备号 / 券号 / 配对时刻 已经全部删掉：
+ * 那套后端（设备授权）已关闭，字段永远不会有新值；留着它们只会让"会话"看起来
+ * 还有第二层含义，而任何按它们做的判断都只是拿一份死数据当依据。
  */
 data class AuthSession(
     val token: String,
     val admin: Boolean = false,
-    val via: String = "",
-    val rid: String = "",
-    val boundIp: String = "",
-    val boundIpKind: String = "",
-    val pairedAt: Long = 0L,
+    /** 账号 id（服务端 acc.id） */
+    val accId: String = "",
+    /** 账号名（服务端 acc.name）：设置页那一行显示的就是它 */
+    val accName: String = "",
+    /** 服务端最后一次告诉我们"还剩多少秒"（acc.left）。0 = 服务端没说 */
+    val leftSec: Long = 0L,
+    /** 由 [leftSec] 在客户端折算出的到期时刻（毫秒）。只用于展示，不做本地门禁 */
     val expiresAt: Long = 0L,
-    val grantSec: Long = 0L,
-    val inviteCode: String = "",
 ) {
     val authorized: Boolean get() = token.isNotBlank()
 }
@@ -108,19 +111,20 @@ internal object AuthSessionJson {
     fun encode(s: AuthSession): String = JSONObject().apply {
         put("token", s.token)
         put("admin", s.admin)
-        put("via", s.via)
-        put("rid", s.rid)
-        put("boundIp", s.boundIp)
-        put("boundIpKind", s.boundIpKind)
-        put("pairedAt", s.pairedAt)
+        put("accId", s.accId)
+        put("accName", s.accName)
+        put("leftSec", s.leftSec)
         put("expiresAt", s.expiresAt)
-        put("grantSec", s.grantSec)
-        put("inviteCode", s.inviteCode)
     }.toString()
 
     /**
      * 解析失败、键缺失、token 为空 一律退化成 null（= 未授权）：
      * 本地数据损坏不该让应用起不来，而"读不出来"与"没授权过"在行为上本来就一样。
+     *
+     * 旧版本存下来的那份会话（设备令牌 + 一堆绑定字段）照样能读出来：
+     * token 在就还是 token，多出来的键直接忽略。它能不能用不取决于这里——
+     * 冷启动 refresh 走 login_me，回来的 login:false 会把它 signOut 清掉，
+     * 这就是"旧设备令牌自然失效"，不需要写任何迁移逻辑。
      */
     fun decode(raw: String?): AuthSession? {
         if (raw.isNullOrBlank()) return null
@@ -133,14 +137,10 @@ internal object AuthSessionJson {
                 AuthSession(
                     token = token,
                     admin = o.optBoolean("admin", false),
-                    via = o.optString("via"),
-                    rid = o.optString("rid"),
-                    boundIp = o.optString("boundIp"),
-                    boundIpKind = o.optString("boundIpKind"),
-                    pairedAt = o.optLong("pairedAt", 0L),
+                    accId = o.optString("accId"),
+                    accName = o.optString("accName"),
+                    leftSec = o.optLong("leftSec", 0L),
                     expiresAt = o.optLong("expiresAt", 0L),
-                    grantSec = o.optLong("grantSec", 0L),
-                    inviteCode = o.optString("inviteCode"),
                 )
             }
         } catch (_: Exception) {

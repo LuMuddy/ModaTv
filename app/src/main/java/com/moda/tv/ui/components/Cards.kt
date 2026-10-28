@@ -47,14 +47,18 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -68,6 +72,7 @@ import androidx.tv.material3.IconButton
 import androidx.tv.material3.IconButtonDefaults
 import androidx.tv.material3.LocalContentColor
 import java.util.Locale
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import com.moda.tv.R
 import com.moda.tv.model.LibraryEntry
@@ -170,6 +175,13 @@ private fun contentColor() = LocalContentColor.current
 @Composable
 private fun secondaryContentColor() = LocalContentColor.current.copy(alpha = 0.75f)
 
+/**
+ * 中文墨迹相对基线的位置（em）：字形顶部约在上方 0.87em，最低笔画约在下方 0.06em，
+ * 于是墨迹的几何中心在基线上方 0.405em。用它替代 ascent/descent 比例来判「居中」，
+ * 结果不随字体变。
+ */
+private const val CJK_INK_CENTER_EM = 0.405f
+
 @Composable
 fun ActionButton(
     text: String,
@@ -224,10 +236,14 @@ fun ActionButton(
         ),
         contentPadding = ButtonDefaults.ContentPadding,
     ) {
+        val labelStyle = TvBody.copy(
+            fontSize = labelSize,
+            fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+        )
         val label: @Composable () -> Unit = {
             Text(
                 text = text,
-                style = TvBody.copy(fontSize = labelSize, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
+                style = labelStyle,
                 // 显式跟随内容色：TvBody 里烤死的 #F2F3F7 在聚焦白底上只有 1.11:1
                 color = contentColor(),
             )
@@ -236,7 +252,27 @@ fun ActionButton(
         if (centerLabel) {
             // 宽高都要吃满：只填宽度时，行内竖直方向仍是靠上排的，
             // 按钮被撑高之后文字看着就「顶在上面」——实测在 68dp 高的胶囊上很明显
-            Box(Modifier.fillMaxWidth().fillMaxHeight(), contentAlignment = Alignment.Center) { label() }
+            //
+            // 再往下是「行盒居中 ≠ 墨迹居中」：行盒高度是 ascent + descent，而中文字形基本
+            // 不越过基线，descent 那条空白全挂在字形下面。ascent/descent 比例随字体变，
+            // 所以同一个胶囊在不同设备上标签高低不同（实测 68dp 胶囊：模拟器字体几乎正中，
+            // 某电视字体里 27sp 的「授权」高 3dp、23sp 的「退出」高 6dp）。
+            // 所以不猜比例，按「中文墨迹在基线上方 0.87em、下方 0.06em」这条与字体无关的
+            // 事实把基线摆到几何中心。
+            val inkCenter = with(LocalDensity.current) { (labelSize * CJK_INK_CENTER_EM).toPx() }
+            val measurer = rememberTextMeasurer()
+            val layout = remember(measurer, text, labelStyle) {
+                measurer.measure(AnnotatedString(text), labelStyle)
+            }
+            // 行盒被 Box 居中 → 行顶 = -高度/2，当前基线 = 行顶 + firstBaseline
+            val shift = inkCenter - layout.firstBaseline + layout.size.height / 2f
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight()
+                    .offset { IntOffset(0, shift.roundToInt()) },
+                contentAlignment = Alignment.Center,
+            ) { label() }
         } else {
             label()
         }

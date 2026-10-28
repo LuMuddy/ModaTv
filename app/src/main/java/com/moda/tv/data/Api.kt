@@ -1,8 +1,12 @@
 package com.moda.tv.data
 
 import android.util.Log
+import com.moda.tv.BuildConfig
 import com.moda.tv.model.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -64,6 +68,9 @@ object Api {
         OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
+            // 请求日志只给 Android Studio 直跑的 debug 包用：判断在这里而不是运行时再做，
+            // release 包的调用链上就没有这个拦截器，「发版忘了关日志」不可能发生
+            .apply { if (BuildConfig.DEBUG) addInterceptor(apiLogInterceptor) }
             .build()
     }
 
@@ -80,8 +87,8 @@ object Api {
      *
      * [requireAuth] = true 是业务请求的门：TOKEN 空白时一个字节都不发，
      * 空令牌必然被后端拒绝，省掉一次注定失败的往返，也让用户看到的是"去授权"
-     * 而不是"网络错误"。兑换与补信息（auth_pair / auth_device）跑在"本地还没有 token"
-     * 和"token 刚换到手"这两个中间态上，所以它们走 requireAuth = false。
+     * 而不是"网络错误"。授权链路（wx_qr / wx_poll / login_activate / login_me）恰好跑在
+     * "本地还没有 token"和"token 还没落盘"这些中间态上，所以它们一律走 requireAuth = false。
      */
     internal suspend fun send(
         action: String,
@@ -93,15 +100,22 @@ object Api {
         val req = Request.Builder()
             .url("$BASE?a=$action")
             .header("Content-Type", "application/json")
-            // 头名保留 X-Auth-Device，不跟着改名成 X-Auth-Token：后端现状只认这个头名，
-            // 改名等于同时要改站点，而客户端改名不换来任何东西——语义靠 TOKEN 表达就够了
-            .apply { if (token.isNotBlank()) header("X-Auth-Device", token) }
+            // 身份头是 X-Auth-Session（扫码登录体系）。设备授权时代的那个设备头已经被后端
+            // 彻底移除——实测带着它打业务接口只回「缺少身份」，也就是说它现在等于没带。
+            .apply { if (token.isNotBlank()) header("X-Auth-Session", token) }
             // 指纹始终带：未授权时它是唯一的身份，服务端据此决定放不放行、把 token 绑给谁
             .header("X-Auth-Fp", FP)
             .post(body.toString().toRequestBody(JSON))
             .build()
+        // 只 cancel 协程打不断阻塞的 execute()：旧请求会照跑完、照打后端，于是「先 cancel 再 launch」
+        // 的调用点（扫码轮询、后台核验）会并发发出重复请求。把取消绑到 OkHttp 的 call 上，
+        // 取消才等于真的不发了。
+        val call = http.newCall(req)
+        val detach = currentCoroutineContext()[Job]?.invokeOnCompletion { cause ->
+            if (cause != null) call.cancel()
+        }
         val text = try {
-            http.newCall(req).execute().use { resp ->
+            call.execute().use { resp ->
                 val t = resp.body?.string().orEmpty()
                 // 401 单列成 Unauthorized：它要说的是"这份凭据无效，去重新授权"，
                 // 而不是"服务端这次出错，稍后重试"——和别的非 2xx 混成 Http(code) 就说不出这句话
@@ -118,9 +132,14 @@ object Api {
                 t
             }
         } catch (e: IOException) {
+            // 取消也会以 IOException("Canceled") 冒上来，那不是网络故障：先把取消原样抛出，
+            // 否则调用方会把「用户离开了这一屏」记成一次网络错误
+            currentCoroutineContext().ensureActive()
             // 裸 IOException 到 ViewModel 只能落成「未知错误」，就地归一为网络失败，
             // 用户才看得到「检查网络」这句可行动的话
             throw ApiException(AppError.Network, e)
+        } finally {
+            detach?.dispose()
         }
         val json = try {
             JSONObject(text)
@@ -141,6 +160,42 @@ object Api {
     /** 业务请求的薄门：只表达"要授权"，鉴权与错误映射仍全在 [send] 里 */
     suspend fun call(action: String, body: JSONObject): JSONObject =
         send(action, body, requireAuth = true)
+
+    // ---------- 授权：扫码登录 + 一次性激活 + 会话核验 ----------
+    //
+    // 这四个动作都走 requireAuth = false：它们要么发生在"还没有凭据"的时刻，
+    // 要么凭据本身就是被检验的对象。让它们过一遍 token 闸门，未授权设备就永远出不了授权门。
+
+    /** 取一张微信登录二维码：{ok, sid, uuid, qr, expires}。sid 轮询、uuid 拼二维码原文 */
+    suspend fun wxQr(): JSONObject = send("wx_qr", JSONObject(), requireAuth = false)
+
+    /** 轮询扫码状态：{ok, status}；status 为 ok / need_code 时另带 token 与 acc */
+    suspend fun wxPoll(sid: String): JSONObject =
+        send("wx_poll", JSONObject().put("sid", sid), requireAuth = false)
+
+    /**
+     * 用一次性授权码激活刚扫出来的账号。
+     *
+     * 身份读两处：请求头 X-Auth-Session（[TOKEN]）与 body.token——这不是冗余，
+     * 后端两处都看，少一处就是「登录状态已失效」。
+     */
+    suspend fun loginActivate(token: String, code: String): JSONObject =
+        send(
+            "login_activate",
+            JSONObject().apply {
+                put("token", token)
+                put("code", code)
+            },
+            requireAuth = false,
+        )
+
+    /**
+     * 核验当前会话。
+     *
+     * 会话无效时后端回 HTTP 200 + ok:true + login:false（不是 401），所以"无效"这件事
+     * 只能由调用方读 login 字段判定；走 requireAuth = true 的那套 401 广播在这里永远不会触发。
+     */
+    suspend fun loginMe(): JSONObject = send("login_me", JSONObject(), requireAuth = false)
 
     // ---------- 6 个 action ----------
 

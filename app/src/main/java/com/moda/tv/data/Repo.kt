@@ -1,7 +1,6 @@
 package com.moda.tv.data
 
 import android.util.Log
-import com.moda.tv.BuildConfig
 import com.moda.tv.model.*
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
@@ -352,8 +351,8 @@ object Repo {
      */
     private val hotWordsUrl: String
         get() = "https://pbaccess.video.qq.com/trpc.universal_backend_service.hot_word_info" +
-            ".HttpHotWordRecall/GetHotWords?appID=" + BuildConfig.HOT_WORDS_APP_ID +
-            "&appKey=" + BuildConfig.HOT_WORDS_APP_KEY +
+            ".HttpHotWordRecall/GetHotWords?appID=" + HOT_WORDS_APP_ID +
+            "&appKey=" + HOT_WORDS_APP_KEY +
             "&platform=2&channelID=0&v=2987741"
 
     private data class HotWordsEntry(val words: List<String>, val at: Long)
@@ -365,6 +364,14 @@ object Repo {
      */
     private const val HOT_WORDS_TTL_MS = 10 * 60_000L
     private const val HOT_WORDS_MISS_TTL_MS = 60_000L
+
+    /**
+     * 热词接口的 appID / appKey。这对值是腾讯热词接口的公共共享凭据：不含任何用户或应用身份，
+     * 抓包就能看到、对方也没有签发与吊销流程，所以直接写死进代码——让每个检出者各自去配一份
+     * 没有保密收益，反而多出「示例文件漏填 → 线上热词静默消失」这一条故障路径。
+     */
+    private const val HOT_WORDS_APP_ID = "3172"
+    private const val HOT_WORDS_APP_KEY = "lGhFIPeD3HsO9xEp"
 
     private val hotWordsCache = java.util.concurrent.atomic.AtomicReference<HotWordsEntry?>(null)
 

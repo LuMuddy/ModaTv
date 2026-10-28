@@ -7,11 +7,9 @@
     <string name="common_off">关</string>
     <string name="common_confirm">确定</string>
     <string name="common_cancel">取消</string>
-    <string name="common_discard">放弃</string>
     <string name="common_clear">清空</string>
     <string name="common_close">关闭</string>
     <string name="common_reset">恢复</string>
-    <string name="common_verifying">验证中…</string>
     <string name="common_processing">处理中…</string>
 
     <!-- ==================== 设置：菜单页 ==================== -->
@@ -20,7 +18,7 @@
     <string name="settings_group_playback_title">播放设置</string>
     <string name="settings_group_playback_desc">播放器内核、解码方式、默认倍速与片头片尾跳过</string>
     <string name="settings_group_network_title">网络与数据</string>
-    <string name="settings_group_network_desc">授权码与本地数据清理</string>
+    <string name="settings_group_network_desc">授权状态与本地数据清理</string>
     <string name="settings_group_about_title">关于</string>
     <string name="settings_group_about_desc">版本、构建与版权信息</string>
     <string name="settings_copyright_value">免费软件 · 查看</string>
@@ -34,24 +32,21 @@
     <string name="settings_playback_default_speed">默认播放倍速</string>
     <string name="settings_playback_default_speed_hint">每次起播都用这个倍速；播放页里临时调的速度只影响当前这一集。</string>
     <string name="settings_playback_danmaku">弹幕默认开关</string>
-    <string name="settings_playback_danmaku_hint">每次起播默认关闭弹幕；播放页的弹幕面板里可以随时打开。</string>
-    <string name="settings_playback_skip_intro">自动跳片头</string>
-    <string name="settings_playback_skip_intro_hint">只对从来没播过的视频生效；看过的剧不会再把片头裁掉。</string>
-    <string name="settings_playback_skip_outro">自动跳片尾</string>
-    <string name="settings_playback_skip_outro_hint">到片尾直接连播下一集。关闭后仍会记为已看完。</string>
+    <string name="settings_playback_danmaku_hint">每次起播默认打开弹幕；播放页的弹幕面板里可以随时关闭。</string>
 
-    <!-- ==================== 设置：网络与数据子页（授权码） ==================== -->
-    <string name="settings_network_subtitle">授权码只能兑换一次，兑换成功后立即生效，无需重启应用。</string>
-    <string name="settings_auth_code">授权码</string>
-    <string name="settings_auth_submit">授权</string>
+    <!-- ==================== 设置：网络与数据子页（授权） ==================== -->
+    <string name="settings_network_subtitle">扫码登录一次长期有效，登录成功立即生效，无需重启应用。</string>
+    <!-- 账号那一行只读显示：有账号名时用 settings_auth_authorized_account（已授权 · 账号名），
+         没有账号名时退回 settings_auth_authorized（只报状态，不编空值） -->
+    <string name="settings_auth_account">登录账号</string>
     <string name="settings_auth_authorized">已授权</string>
+    <string name="settings_auth_authorized_account">已授权 · %1$s</string>
     <string name="settings_auth_unauthorized">未授权</string>
-    <string name="settings_auth_invalid">授权码是 8 位字母或数字</string>
-    <string name="settings_auth_hint">授权码是一张一次性兑换券：兑换成功后它就没用了，本机之后只用换回来的凭据。填错可以就地重填。</string>
-    <string name="settings_auth_saved">已授权，首页正在重新加载</string>
     <string name="settings_network_clear_history">清除播放记录</string>
     <string name="settings_network_clear_favorites">清除收藏</string>
     <string name="settings_network_clear_search">清除搜索历史</string>
+    <string name="settings_network_clear_completed">清除看完记录</string>
+    <string name="settings_network_clear_auth">清除授权</string>
     <string name="settings_network_clear_hint">清空操作不可撤销，每项都会先弹一次确认。</string>
 
     <!-- ==================== 设置：关于子页 ==================== -->
@@ -74,6 +69,11 @@
     <string name="clear_search_title">清空全部搜索历史？</string>
     <string name="clear_search_message">将清空全部搜索历史，删除后无法恢复。</string>
     <string name="clear_search_done">已清除搜索历史</string>
+    <!-- 标题复用 strings_library 的 lib_done_clear_title：同一个动作两种入口不该有两种说法 -->
+    <string name="clear_completed_message">将清空全部已看完记录，删除后无法恢复（不影响观看历史）。</string>
+    <string name="clear_completed_done">已清除看完记录</string>
+    <string name="clear_auth_title">清除本机授权？</string>
+    <string name="clear_auth_message">将删除本机的登录凭据并回到扫码授权门，本机的播放记录、收藏等数据不受影响。</string>
 
     <!-- ==================== 版权声明弹窗（设置页「版权声明」行复用同一条 copyright_title） ==================== -->
     <string name="copyright_title">版权声明</string>
@@ -108,10 +108,24 @@
 
     <!-- ==================== 授权门（未授权时整屏只有这一张卡，见 ui/AuthGateScreen.kt） ==================== -->
     <string name="gate_title">需要授权</string>
-    <string name="gate_message">授权码请向管理员索取。填一次长期有效，之后开机不必再填。不授权将退出应用。</string>
+    <!-- 主路径是扫码；授权码只在扫码之后或扫码不可用时补位，所以这句话把它留在后半句 -->
+    <string name="gate_message">用微信扫描下方二维码并确认登录。登录一次长期有效，不授权将退出应用。</string>
+    <!-- 状态行：取码中 / pending / 取码失败 / 已扫码 / 过期 / 账号未激活 -->
+    <string name="gate_qr_loading">正在获取登录二维码…</string>
+    <string name="gate_qr_hint">请用微信扫一扫</string>
+    <string name="gate_scanned">已扫码，请在手机上点「确认登录」</string>
+    <string name="gate_expired">二维码已过期，请点「刷新二维码」</string>
+    <string name="gate_qr_failed">二维码获取失败，请点「刷新二维码」</string>
+    <string name="gate_need_code">账号未激活，请输入授权码</string>
+    <!-- 授权码补位：输入区说明、没有扫码会话时的指引、占位、闸门、按钮 -->
+    <string name="gate_code_hint">输入管理员提供的一次性授权码，再点「激活」</string>
     <string name="gate_code_placeholder">请输入 8 位授权码</string>
     <string name="gate_code_invalid">授权码是 8 位字母或数字</string>
-    <string name="gate_submit">授权</string>
+    <!-- 只剩 TvViewModel.activate 的空 token 守卫在用（入口唯一化之后本屏走不到这里）；
+         要连它一起删，必须同时删 TvViewModel 里那一行守卫——那个文件不在本轮的改动边界内 -->
+    <string name="gate_code_need_scan">请先点「刷新二维码」重新扫码：授权码要在扫码之后使用</string>
+    <string name="gate_activate">激活</string>
+    <string name="gate_activating">正在激活…</string>
+    <string name="gate_refresh_qr">刷新二维码</string>
     <string name="gate_exit">退出</string>
-    <string name="gate_authorizing">正在授权…</string>
 </resources>

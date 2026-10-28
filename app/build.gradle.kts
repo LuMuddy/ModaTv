@@ -6,16 +6,14 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-// 敏感值只存在于 local.properties（已被 .gitignore 排除），构建期注入 BuildConfig。
-// 键名与含义见仓库里的 local.properties.example。
+// 签名材料只存在于 local.properties（已被 .gitignore 排除），构建期读进来建 signingConfig。
+// 四个键：modatv.keystoreFile / modatv.keystorePassword / modatv.keyAlias / modatv.keyPassword。
+// 路径相对工程根解析，密钥文件本身也在 .gitignore 里。
 val localSecrets = Properties().apply {
     rootProject.file("local.properties").takeIf { it.isFile }?.inputStream()?.use { load(it) }
 }
 
 fun secret(key: String): String = localSecrets.getProperty(key).orEmpty()
-
-fun literal(raw: String): String =
-    "\"" + raw.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
 android {
     namespace = "com.moda.tv"
@@ -30,9 +28,6 @@ android {
         versionCode = (project.findProperty("modatv.versionCode") as String?)?.toIntOrNull() ?: 1
         versionName = project.findProperty("modatv.versionName") as String? ?: "1.0.0"
 
-        buildConfigField("String", "HOT_WORDS_APP_ID", literal(secret("modatv.hotWordsAppId")))
-        buildConfigField("String", "HOT_WORDS_APP_KEY", literal(secret("modatv.hotWordsAppKey")))
-
         /**
          * 只保留 TV 盒子真正常见的两个 ABI。
          * 原因是 ijk 的 native 包同时打了 arm64-v8a / armeabi-v7a / armeabi / x86_64，
@@ -45,7 +40,7 @@ android {
     }
 
     /**
-     * 签名材料和热词凭据走同一条路：只从 local.properties 读，那文件永远不进仓库。
+     * 签名材料只从 local.properties 读，那文件永远不进仓库。
      * 没写 modatv.keystoreFile 时不建 signingConfig，assembleRelease 会出
      * app-release-unsigned.apk —— 装不上但编得过，本地只想看看 release 产物时不必先造密钥。
      * CI 上必须签名：workflow 用 apksigner 校验产物，签没签由构建结果说话，不靠约定。
@@ -116,7 +111,17 @@ dependencies {
      */
     implementation("xyz.doikki.android.dkplayer:player-ijk:3.3.7")
 
+    /**
+     * 微信登录二维码在本地画：服务端 wx_qr 回的是一张图片 URL，但电视上没有浏览器，
+     * 也不能把二维码当成"下载一张图"——扫的必须是屏幕上的像素。所以只引 core
+     * （纯 JVM 的编码器，QRCodeWriter 足够），不引 android-core / javase 那一套：
+     * 那两个包带的是摄像头解码与 GUI，我们一条都不用。
+     */
+    implementation("com.google.zxing:core:3.5.3")
+
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // 请求日志用官方拦截器（BODY 级、tag = okhttp.OkHttpClient），只挂 debug 包，见 data/ApiLog.kt
+    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("androidx.datastore:datastore-preferences:1.1.7")
 

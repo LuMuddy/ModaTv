@@ -20,6 +20,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.foundation.lazy.LazyListState
@@ -444,6 +445,13 @@ fun TvRowFocusScroll(
  * 对照 [TvGridFocusScroll]：那边内容顶部 padding(12dp) 比 comfort(16dp) 小，回程 delta 恒为负、
  * 被滚动边界夹到 0，于是"看起来"能回原位——那是参数凑巧，不是机制。
  *
+ * ## 末行还要把"尾部"带出来
+ *
+ * comfort 的下界只到"被聚焦行离下沿 16dp"，行**之下**的东西它管不着。设置子页的收尾说明、
+ * 清空后的反馈行都不属于任何跟焦行，于是滚动到最后一个可聚焦行就收工，视口剩下的行程白扔。
+ * 真机故障（设置 → 网络与数据，1920×1080）：停在最后一行时还剩 56dp 可滚，
+ * 底下那句说明被切成半行。所以**末行**（下面再没有别的跟焦行）直接抵到 `maxValue`。
+ *
  * 结论：**位置必须被记住**。这个滚动器因此维护 `行 key → 滚动偏移` 的记忆：
  * 离开一行时记下当前偏移；回到这一行就直接 scrollTo 那个偏移，并**跳过** comfort 校正
  * （校正会把位置重新归一到 comfort，正好是这次要避免的事）。
@@ -582,6 +590,20 @@ class TvColumnFocusScroller internal constructor(
     }
 
     /**
+     * 把视口推到最底部：**尾部内容刚长出来时由调用方主动调**。
+     *
+     * 收尾的反馈行没有自己的焦点事件（它不可聚焦），滚动器不会知道它刚出现。
+     * 用户点完「确认清空」时视口正停在旧的最大偏移上，新长出的一行整个落在可视区之外，
+     * 表现就是"确认了但屏幕上什么都没发生"。等两帧（同 TvFirstFocus）是为了让新内容
+     * 先参与测量，否则此刻的 maxValue 还是旧值。
+     */
+    suspend fun revealTail() {
+        withFrameNanos { }
+        withFrameNanos { }
+        state.scrollTo(state.maxValue)
+    }
+
+    /**
      * 没记忆：按坐标双向补差值，让这一行离上下沿都有 [comfortPx]。
      *
      * @return 是否真的量到了（坐标/视口没上树时返回 false，调用方据此决定要不要记账）
@@ -602,12 +624,35 @@ class TvColumnFocusScroller internal constructor(
             val delta = when {
                 box.top < comfortPx -> box.top - comfortPx
                 box.bottom > viewportHeight - comfortPx -> box.bottom - (viewportHeight - comfortPx)
+                // comfort 只保证"被聚焦行离下沿还有 16dp"，管不到行**之下**的内容：
+                // 收尾说明（设置子页的 HintText、清空后的反馈行）不属于任何跟焦行，
+                // 于是滚到最后一个可聚焦行就收工，把视口剩下的行程全浪费掉。
+                // 真机（1920×1080，设置 → 网络与数据）：最后一行离下沿 16dp 时还剩 56dp 可滚，
+                // 底下那句说明被视口切成半行 —— 这就是"顶到最后一行显示不全"。
+                // 所以末行必须把内容尾部一起推出来：直接抵到 maxValue。
+                isBottomMostRow(vp, key, box) -> (state.maxValue - state.value).toFloat()
                 else -> 0f
             }
             if (abs(delta) < 1f) return true
             state.scrollBy(delta)
         }
         return true
+    }
+
+    /**
+     * 这一行是不是最后一个跟焦行（它下面再没有别的跟焦行）。
+     *
+     * 判"下面有没有行"而不是判"是不是最大下标"：行 key 由调用方给，既不保证连续
+     * （详情页那种"一块内容一个 key"的挂法），也不保证页内下标就是视觉顺序。
+     * 比的是同一时刻的视口坐标，视口外的行也照样参与（clipBounds = false）。
+     */
+    private fun isBottomMostRow(vp: LayoutCoordinates, key: Any, box: Rect): Boolean {
+        // 还没量过时 maxValue 是 Int.MAX_VALUE 这个哨兵值，照它滚会直接飞出内容区
+        if (state.maxValue == Int.MAX_VALUE) return false
+        return itemCoords.none { (k, c) ->
+            k != key && c.isAttached &&
+                vp.localBoundingBoxOf(c, clipBounds = false).top > box.top + 1f
+        }
     }
 }
 

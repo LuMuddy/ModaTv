@@ -16,18 +16,53 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 /**
- * 授权：把一次性授权码兑换成 token，之后所有请求都用 token。
+ * 一张微信登录二维码。
  *
- * 为什么码只当兑换券：服务端的码用过即废，把它当长期凭据只会得到一个"重启就失效"的
- * 客户端；token 才是可以持久化并反复出示的身份。所以本层只做两件事——兑换、续期，
- * 其余数据层代码一律只认 [Api.TOKEN]。
+ * [sid] 是轮询的凭据，[uuid] 是二维码里的原文之一部分（见 AuthGateScreen 的模板常量），
+ * [expiresSec] 只是服务端给的参考时长——真正的"过期"以 wx_poll 回的 status 为准，
+ * 客户端不自己按秒数计时：本地时钟和服务器差几分钟是常事，本地判过期只会误杀还能用的码。
+ */
+data class WxQr(val sid: String, val uuid: String, val expiresSec: Long)
+
+/**
+ * 一次 wx_poll 的结果。
+ *
+ * 只有 [Authorized] 会把会话落盘；[NeedCode] 里的 token 是"这次扫码会话"的凭据，
+ * 账号还没激活，拿它去 login_me 只会得到 login:false，所以故意不落盘——
+ * 激活成功那一刻才写盘（见 [Auth.activate]）。
+ */
+sealed interface WxPoll {
+    /** 二维码已给出，还没人扫 */
+    data object Pending : WxPoll
+
+    /** 手机已扫，等机主点「确认登录」 */
+    data object Scanned : WxPoll
+
+    /** 这张码失效了，界面要换一张 */
+    data object Expired : WxPoll
+
+    /** 登录完成：会话已经落盘并生效，调用方只需把它交给界面 */
+    data class Authorized(val session: AuthSession) : WxPoll
+
+    /** 账号未激活：带上这次扫码会话的 token，激活时两处都要用它 */
+    data class NeedCode(val token: String) : WxPoll
+}
+
+/**
+ * 授权：微信扫码登录（主路径）+ 一次性授权码激活（扫码之后/失败之后的补位）。
+ *
+ * 为什么改成这个顺序：服务端已经把设备授权那条路关掉了——实测旧的兑换/补信息动作一律回
+ * 「服务端已关闭设备授权」或 authorized:false，旧的设备身份头也不再被认，
+ * 也就是说**一张 8 位码单独兑换不出任何身份**。现在能换到 token 的只有一条路：
+ * wx_qr 取码 → 微信扫一扫确认 → wx_poll 回 ok（或 need_code 再用授权码激活一次）。
+ * 所以本层只做四件事：取码、轮询、激活、核验，其余数据层代码一律只认 [Api.TOKEN]。
  */
 object Auth {
 
     private const val TAG = "Auth"
 
     /**
-     * store 由 ModaApp.onCreate 注入：pair / refresh 的公开签名不带 Context（调用方是
+     * store 由 ModaApp.onCreate 注入：取码 / 轮询 / 激活的公开签名不带 Context（调用方是
      * ViewModel，它已经拿着 Application 了），但落盘需要 Context 才能开 DataStore。
      * 注入点收在一处，就不必在每个调用点重复传 Context。
      */
@@ -45,122 +80,131 @@ object Auth {
     }
 
     /**
-     * 授权码 → 授权会话；服务端没给 token 就抛 [AppError.AuthFailed]。
-     *
-     * 成功路径只有一条：拿到 token → 补到期/绑定信息 → 落盘 → 内存生效。
-     * 落盘与回写是同一次成功里的两步，任何一步失败都不留半截状态（见下方注释）。
+     * 取一张登录二维码。sid / uuid 缺任何一个都等于这张码不可用（轮不动、画不出），
+     * 直接当上游故障上抛：界面会显示「获取失败 + 刷新」，而不是画一张永远刷不动的图。
      */
-    suspend fun pair(invite: String): AuthSession = withContext(Dispatchers.IO) {
-        // 码是一次性的：先确认落盘通道可用，再发兑换请求。反过来最坏的结局是码被服务端
-        // 用掉了、token 却没存下来——消耗掉了却一无所有，且无法重试同一个码
-        val sessionStore = requireStore()
-        // 归一化只在这一处做，且要和站点页面那张输入框的口径一致：
-        // 站点是 toUpperCase().replace(/[^A-Z0-9]/g,'')，所以粘贴 "k7m2-qx9p" / "K7M2 QX9P"
-        // 在那边都能过。我们如果只 trim + uppercase，中间那个 '-' 会原样发给后端并被判无效，
-        // 用户会以为「码错了」而不是「我的手误没被清掉」。长度不在这里截：
-        // 后端才是码的权威，前端截断会把一个合法的更长的码悄悄改坏。
-        val code = invite.uppercase().filter { it in 'A'..'Z' || it in '0'..'9' }
-        // 空码不必打扰后端：兑换失败的错误码本来就在说"这个码不能用"
-        if (code.isEmpty()) throw ApiException(AppError.AuthFailed)
+    suspend fun requestQr(): WxQr = withContext(Dispatchers.IO) {
+        val j = Api.wxQr()
+        val sid = j.optString("sid")
+        val uuid = j.optString("uuid")
+        if (sid.isBlank() || uuid.isBlank()) throw ApiException(AppError.Upstream(null))
+        WxQr(sid = sid, uuid = uuid, expiresSec = j.optLong("expires", 0L))
+    }
 
-        // requireAuth = false：这一刻本地还没有 token，正是要把 token 换回来的请求
-        val paired = try {
-            Api.send("auth_pair", JSONObject().apply {
-                put("fp", Api.FP)
-                put("invite", code)
-            }, requireAuth = false)
-        } catch (e: ApiException) {
-            // auth_pair 的失败几乎都是"这个码不能用"（无效 / 已用过 / 已过期），
-            // 服务端用 ok=false + 它自己的中文原因表达，到这一层只能落成 AuthFailed，
-            // 好让设置页说"重新填码"；网络类失败原样上抛，因为那时该说的是"检查网络"
-            throw if (e.error is AppError.Upstream || e.error == AppError.Unauthorized) {
-                ApiException(AppError.AuthFailed, e)
-            } else {
-                e
+    /**
+     * 轮询一次扫码状态。
+     *
+     * 状态判定只看 status 字段：ok 的那一次 token 就在同一个响应里，不需要再换一次票
+     * （再换一次只会让"码已被用掉"和"会话刚建立"这两个时刻错开）。
+     */
+    suspend fun poll(sid: String): WxPoll = withContext(Dispatchers.IO) {
+        if (sid.isBlank()) throw ApiException(AppError.Upstream(null))
+        val j = Api.wxPoll(sid)
+        val status = j.optString("status")
+        val token = j.optString("token")
+        when (status) {
+            "pending" -> WxPoll.Pending
+            "scanned" -> WxPoll.Scanned
+            "expired" -> WxPoll.Expired
+            "ok" -> WxPoll.Authorized(adoptSession(token, j.optJSONObject("acc"), requireStore()))
+            "need_code" -> {
+                // token 空着激活不了任何东西：这不是"账号未激活"，是这次扫码没成立
+                if (token.isBlank()) throw ApiException(AppError.Upstream(null))
+                WxPoll.NeedCode(token)
+            }
+            // 后端以后加状态时不要静默当成 pending：那会让门永远停在「请用微信扫一扫」，
+            // 用户看得见二维码却永远等不到下一步，而且没有任何日志能指认它
+            else -> {
+                Log.w(TAG, "wx_poll 返回未知 status：${status.take(24)}")
+                throw ApiException(AppError.Upstream(null))
             }
         }
+    }
 
-        val token = paired.optString("token")
-        // ok=true 却没 token：兑换没成立（例如码被并发用掉）。绝不能存一个空 token 的会话，
-        // 否则本地"已授权"但每个请求都被后端判无效，用户永远看不到该重新填码的那句话
-        if (token.isBlank()) throw ApiException(AppError.AuthFailed)
+    /**
+     * 一次性授权码激活（扫码之后才有的第二步）。
+     *
+     * 为什么必须先扫码：login_activate 的身份来自那段扫码会话，没有有效会话时后端一定回
+     * 「登录状态已失效，请重新扫码」（实测）。所以本函数只该在 [WxPoll.NeedCode] 之后被调用；
+     * 没有 token 时调用方要在本地就把用户挡住，别发这一趟注定失败的请求。
+     *
+     * 码是一次性的：先确认落盘通道可用再发请求。反过来最坏的结局是码被服务端用掉了、
+     * token 却没存下来——既消耗掉了又无法重试同一个码。
+     */
+    suspend fun activate(token: String, code: String): AuthSession = withContext(Dispatchers.IO) {
+        val sessionStore = requireStore()
+        // 归一化口径只在这一处：站点那张输入框也是 toUpperCase + 丢非字母数字，
+        // 粘贴 "k7m2-qx9p" 在两边都能过。长度不在这里截——后端才是码的权威。
+        val normalized = code.uppercase().filter { it in 'A'..'Z' || it in '0'..'9' }
+        if (normalized.isEmpty() || token.isBlank()) throw ApiException(AppError.AuthFailed)
 
-        val base = AuthSession(
-            token = token,
-            admin = paired.optBoolean("admin", false),
-            via = paired.optString("via"),
-            rid = paired.optString("rid"),
-            boundIp = paired.optString("bound_ip"),
-            boundIpKind = paired.optString("bound_ip_kind"),
-            pairedAt = paired.optLong("paired_at", 0L),
-        )
-
-        // auth_device 要带 X-Auth-Device，而这个头读的就是 Api.TOKEN：缓存必须先切到新 token，
-        // 补信息的请求才认得它自己。切之前记下旧值——下文任何一步失败都靠它回滚
+        // login_activate 读两处身份：请求头 X-Auth-Session（由 Api 从 TOKEN 注入）与 body.token。
+        // 所以先把这次扫码的 token 放进内存；任何一步失败都回滚，否则会留下
+        // 「内存自称有身份、盘上没有会话」的半截状态，而它没有任何地方能自愈
         val previous = Api.TOKEN
         Api.TOKEN = token
         try {
-            // requireAuth = false：Api.TOKEN 刚换成新值，这里要的是 send 照现状带上去，
-            // 而不是再过一次"有没有 token"的门——那只是同一个事实的第二次判断
-            val full = try {
-                merge(base, Api.send("auth_device", JSONObject(), requireAuth = false))
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                // 补信息失败不能连 token 一起丢：token 已经到手且大概率可用，缺的只是到期 / 绑定
-                // 这些展示字段，下次 refresh 还能补回来；为它们丢掉一次成功的兑换是最坏的取舍
-                Log.w(TAG, "auth_device 补信息失败，先按已知字段落盘：${e.message}")
-                base
+            val j = try {
+                Api.loginActivate(token, normalized)
+            } catch (e: ApiException) {
+                // 激活失败（码无效 / 已用过 / 会话失效）对用户是同一句话：这张码不能用。
+                // 网络类失败原样上抛——那时该说的是「检查网络」，不是「码错了」
+                throw if (e.error is AppError.Upstream || e.error == AppError.Unauthorized) {
+                    ApiException(AppError.AuthFailed, e)
+                } else {
+                    e
+                }
             }
-            try {
-                sessionStore.save(full)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                // 落盘失败等同于这次兑换没成，别再往下走
-                throw if (e is ApiException) e else ApiException(AppError.Storage, e)
-            }
-            full
+            adoptSession(token, j.optJSONObject("acc"), sessionStore)
         } catch (e: Throwable) {
-            // 「内存回写 token」与「落盘」是同一次成功里的两步，必须一起成立：
-            // 落盘没成、或者协程正好在这里被取消，都要把内存退回旧值。否则会剩下
-            // "本进程自称已授权、重启后未授权"的半截状态，而它没有任何地方能自愈
             Api.TOKEN = previous
             throw e
         }
     }
 
     /**
-     * 已有 token 时刷新到期 / 绑定信息；未授权返回 null；
-     * token 失效则清空本地并返回 null。其余失败原样上抛，由 ViewModel 决定是否提示。
+     * 冷启动 / 后台核验：login_me 说"还有效"就照用，说"无效"就清盘。
+     *
+     * 会话无效时后端回的是 HTTP 200 + login:false（不是 401），所以判定只能看字段。
+     * 旧版本存下来的设备令牌在这里第一次就会得到 login:false 并被 [signOut] 清掉——
+     * 不需要为它写任何迁移逻辑，这条路径本身就是迁移。
+     *
+     * 返回 null = 已无会话（未授权）；抛异常 = 这一次没问成（断网、后端抖动），
+     * 由 ViewModel 决定是否提示，旧会话保留。
      */
     suspend fun refresh(): AuthSession? = withContext(Dispatchers.IO) {
         // 没有 token 就没有"刷新"这回事：这是常态（未授权），不是错误
         if (Api.TOKEN.isBlank()) return@withContext null
         val sessionStore = requireStore()
         val existing = sessionStore.get()
-        val device = try {
-            Api.send("auth_device", JSONObject(), requireAuth = false)
+        val j = try {
+            Api.loginMe()
         } catch (e: CancellationException) {
             throw e
         } catch (e: ApiException) {
-            // 401 与 authorized=false 是同一件事的两种说法：这份凭据不作数了
+            // 真 401 与 login:false 是同一件事的两种说法：这份凭据不作数了
             if (e.error == AppError.Unauthorized) {
                 signOut()
                 return@withContext null
             }
             throw e
         }
-        // 服务端用 ok=true + authorized=false 表达"令牌无效或密钥已更换"。本地若继续认它，
+        // 服务端用 ok=true + login=false 表达"这个 token 换不到身份了"。本地若继续认它，
         // 后续每个请求都要白跑一趟才拿到同样的结论
-        if (!device.optBoolean("authorized", false)) {
-            Log.w(TAG, "auth_device 判定未授权，清空本地会话")
+        if (!j.optBoolean("login", false)) {
+            Log.w(TAG, "login_me 判定会话失效，清空本地会话")
             signOut()
             return@withContext null
         }
-        val updated = merge(existing ?: AuthSession(Api.TOKEN), device)
-        sessionStore.save(updated)
-        Api.TOKEN = updated.token
+        // 会话有效但 acc 可能只回一半：以盘上那份为底，别用空值把上次的账号名擦掉
+        val updated = sessionOf(Api.TOKEN, j.optJSONObject("acc"), existing)
+        try {
+            sessionStore.save(updated)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            throw if (e is ApiException) e else ApiException(AppError.Storage, e)
+        }
         updated
     }
 
@@ -186,18 +230,57 @@ object Auth {
     }
 
     /**
-     * 服务端字段优先，但空值不能把兑换时拿到的信息覆盖掉：
-     * auth_device 在某些状态下会少给几项（甚至只回 ok/authorized），
-     * 用空白把它盖掉，等于用一次成功的刷新擦掉上次的绑定信息。
+     * 会话落盘 + 内存生效。两步必须一起成立：
+     *
+     * 先把 [Api.TOKEN] 切到新值再写盘——写盘是 IO，这段时间里界面可能已经开始发请求，
+     * 它们必须已经是带着新身份出去的。写盘失败（或协程在这里被取消）就把内存退回旧值，
+     * 否则会剩下「本进程自称已授权、重启后未授权」的半截状态，而它没有任何地方能自愈。
      */
-    private fun merge(base: AuthSession, device: JSONObject): AuthSession = base.copy(
-        admin = device.optBoolean("admin", base.admin),
-        boundIp = device.optString("bound_ip").ifBlank { base.boundIp },
-        expiresAt = device.optLong("expires_at", base.expiresAt),
-        grantSec = device.optLong("grant_sec", base.grantSec),
-        inviteCode = device.optString("invite_code").ifBlank { base.inviteCode },
-        pairedAt = device.optLong("paired_at", 0L).takeIf { it > 0L } ?: base.pairedAt,
-    )
+    private suspend fun adoptSession(
+        token: String,
+        acc: JSONObject?,
+        sessionStore: AuthSessionStore,
+        base: AuthSession? = null,
+    ): AuthSession {
+        // ok=true 却没 token：登录没成立（例如码被并发用掉）。绝不能存一个空 token 的会话，
+        // 否则本地"已授权"但每个请求都被后端判无效，用户永远看不到该重新扫码的那句话
+        if (token.isBlank()) throw ApiException(AppError.AuthFailed)
+        val session = sessionOf(token, acc, base)
+        val previous = Api.TOKEN
+        Api.TOKEN = token
+        try {
+            sessionStore.save(session)
+        } catch (e: CancellationException) {
+            Api.TOKEN = previous
+            throw e
+        } catch (e: Exception) {
+            Api.TOKEN = previous
+            throw if (e is ApiException) e else ApiException(AppError.Storage, e)
+        }
+        return session
+    }
+
+    /**
+     * 服务端字段 → 本地会话。acc 缺失时退回 [base]：refresh 时后端可能只回一半字段，
+     * 用空串把它盖掉等于用一次成功的核验擦掉上次登录的账号名。
+     */
+    private fun sessionOf(token: String, acc: JSONObject?, base: AuthSession? = null): AuthSession {
+        val leftSec = acc?.optLong("left", 0L)?.takeIf { it > 0L } ?: base?.leftSec ?: 0L
+        return AuthSession(
+            token = token,
+            admin = acc?.optBoolean("admin", false) ?: base?.admin ?: false,
+            accId = acc?.optString("id").orEmpty().ifBlank { base?.accId.orEmpty() },
+            accName = acc?.optString("name").orEmpty().ifBlank { base?.accName.orEmpty() },
+            leftSec = leftSec,
+            // left 是"剩余秒数"，每次读到它都要重新折算成绝对时刻；不重算的话
+            // expiresAt 会永远停在第一次登录那一刻，展示出来就是个假时间
+            expiresAt = if (leftSec > 0L) {
+                System.currentTimeMillis() + leftSec * 1000L
+            } else {
+                base?.expiresAt ?: 0L
+            },
+        )
+    }
 }
 
 /**
@@ -207,8 +290,9 @@ object Auth {
  * （首页整页刷新就是 19 个 tab 并发），逐处判断等于漏掉一处就多一条「停在半死状态」的路。
  * 这里只广播事实，落成界面（作废会话 + 回首页 + 停在授权门）由 ViewModel 一处做。
  *
- * 只由**带着凭据**的请求发（见 Api.send 的 requireAuth）：兑换与补信息跑在「本地还没有有效凭据」
- * 的时刻，它们的 401 不是过期；让它触发全局作废，会把一次填错码变成一次清会话。
+ * 只由**带着凭据**的请求发（见 Api.send 的 requireAuth）：取码 / 轮询 / 激活 / 核验跑在
+ * 「本地还没有有效凭据」或「凭据正在被检验」的时刻，它们的 401 不是过期；
+ * 让它触发全局作废，会把一次填错码变成一次清会话。
  */
 object AuthSignal {
     private val _invalidated = MutableSharedFlow<Unit>(
@@ -222,4 +306,3 @@ object AuthSignal {
         _invalidated.tryEmit(Unit)
     }
 }
-

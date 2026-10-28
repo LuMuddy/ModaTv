@@ -19,6 +19,8 @@ import com.moda.tv.data.AuthSignal
 import com.moda.tv.data.Repo
 import com.moda.tv.data.UpdateDownloader
 import com.moda.tv.data.UpdateSource
+import com.moda.tv.data.WxPoll
+import com.moda.tv.data.WxQr
 import com.moda.tv.data.local.AuthSession
 import com.moda.tv.data.local.AuthSessionStore
 import com.moda.tv.data.local.AuthSessionStoreImpl
@@ -78,9 +80,28 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
+/**
+ * 授权门的两个取数动作（取码 / 轮询）的返回。
+ *
+ * 为什么不是直接抛异常：屏幕层的约定是「拿现成文案，不拿异常」（见 AGENTS.md 的分层）——
+ * 授权门里没有任何 try/catch，失败原因必须是已经按当前语言取好的字符串。
+ * 为什么是两个具体类型而不是一个泛型 Ok<T>：泛型 sealed 结果在 when 分支里要靠星投影
+ * 或强制转换才拿得到值，读的人得在大脑里跑一遍类型推断；这里只有两处，各写一个更直白。
+ */
+sealed interface QrTicketResult {
+    data class Ok(val ticket: WxQr) : QrTicketResult
+    data class Failed(val text: String) : QrTicketResult
+}
+
+sealed interface QrPollResult {
+    data class Ok(val poll: WxPoll) : QrPollResult
+    data class Failed(val text: String) : QrPollResult
+}
+
 /** 播放页的三种装配结果；Composable 只按状态渲染，不再自己判断加载时序 */
 sealed interface PlayerUi {
     data object Loading : PlayerUi
+
     /** 装配失败只给错误码：文案由 UI 层按当前系统语言渲染（见 components/appErrorText） */
     data class Error(val error: AppError) : PlayerUi
     data class Ready(
@@ -174,6 +195,7 @@ private fun Throwable.toAppError(): AppError = when (this) {
 class TvViewModel(private val app: Context) : ViewModel() {
 
     private val history: HistoryStore = HistoryStoreImpl.create(app)
+
     /** 播放页里按剧改过内核/软硬解的覆盖值；生命周期跟着观看记录走 */
     private val playbackOverrideStore = PlaybackOverrideStoreImpl.create(app)
     // ============ 收藏模块（勿删）============
@@ -196,16 +218,14 @@ class TvViewModel(private val app: Context) : ViewModel() {
      * 历史页的数据源。DataStore 的 IO 异常在 store 内部已兜成空表，
      * 这里再给个 emptyList 初值，保证首帧就是"空历史"而不是 null。
      */
-    val historyEntries: StateFlow<List<LibraryEntry>> = history.entries
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val historyEntries: StateFlow<List<LibraryEntry>> = history.entries.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     /** 收藏页的数据源；与 historyEntries 同构，store 内部已兜住 IO 异常并倒序 */
-    val favoriteEntries: StateFlow<List<LibraryEntry>> = favorites.entries
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val favoriteEntries: StateFlow<List<LibraryEntry>> = favorites.entries.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     /** 已看完页的数据源；与其他两个列表同构（store 内部已按 updatedAt 倒序） */
-    val completedEntries: StateFlow<List<LibraryEntry>> = completed.entries
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val completedEntries: StateFlow<List<LibraryEntry>> =
+        completed.entries.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
 
     /**
@@ -220,8 +240,7 @@ class TvViewModel(private val app: Context) : ViewModel() {
      * 不去碰 DataStore——否则从收藏页删掉当前剧时这里会白闪一下。
      */
     @OptIn(ExperimentalCoroutinesApi::class)
-    val detailIsFavorite: StateFlow<Boolean> = detailCid
-        .flatMapLatest { cid -> if (cid.isBlank()) flowOf(false) else favorites.isFavorite(cid) }
+    val detailIsFavorite: StateFlow<Boolean> = detailCid.flatMapLatest { cid -> if (cid.isBlank()) flowOf(false) else favorites.isFavorite(cid) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     /**
@@ -233,29 +252,27 @@ class TvViewModel(private val app: Context) : ViewModel() {
      * 已经落定的光标不会被无谓地重新抢一次。
      */
     @OptIn(ExperimentalCoroutinesApi::class)
-    val detailResume: StateFlow<DetailResume> = detailCid
-        .flatMapLatest { cid ->
-            if (cid.isBlank()) {
-                flowOf(DetailResume())
-            } else {
-                history.entries.map { list ->
-                    val entry = list.firstOrNull { it.cid == cid }
-                    if (entry == null) {
-                        DetailResume(cid = cid, loaded = true)
-                    } else {
-                        DetailResume(
-                            cid = cid,
-                            vid = entry.vid,
-                            episodeIndex = entry.episodeIndex,
-                            loaded = true,
-                            // 断点必须跟着集号一起出来：详情页的「继续播放 xx:xx」两者缺一不可
-                            positionMs = entry.positionMs.coerceAtLeast(0L),
-                        )
-                    }
+    val detailResume: StateFlow<DetailResume> = detailCid.flatMapLatest { cid ->
+        if (cid.isBlank()) {
+            flowOf(DetailResume())
+        } else {
+            history.entries.map { list ->
+                val entry = list.firstOrNull { it.cid == cid }
+                if (entry == null) {
+                    DetailResume(cid = cid, loaded = true)
+                } else {
+                    DetailResume(
+                        cid = cid,
+                        vid = entry.vid,
+                        episodeIndex = entry.episodeIndex,
+                        loaded = true,
+                        // 断点必须跟着集号一起出来：详情页的「继续播放 xx:xx」两者缺一不可
+                        positionMs = entry.positionMs.coerceAtLeast(0L),
+                    )
                 }
             }
         }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DetailResume())
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DetailResume())
 
     /**
      * 当前详情剧里「已看完」的集号集合，详情页给选集网格打角标。
@@ -264,10 +281,9 @@ class TvViewModel(private val app: Context) : ViewModel() {
      * 详情页停留期间用户在播放页看完一集、再返回详情，角标必须立刻出现，
      * 一次性读的快照做不到这一点（它不会跟着 DataStore 变）。
      */
-    val detailCompletedIndexes: StateFlow<Set<Int>> =
-        combine(detailCid, completed.entries) { cid, list ->
-            if (cid.isBlank()) emptySet() else list.filter { it.cid == cid }.map { it.episodeIndex }.toSet()
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+    val detailCompletedIndexes: StateFlow<Set<Int>> = combine(detailCid, completed.entries) { cid, list ->
+        if (cid.isBlank()) emptySet() else list.filter { it.cid == cid }.map { it.episodeIndex }.toSet()
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
 
 
     /** 页面栈；栈底永远是 Home，因此 size > 1 就等于"按返回键还能退一层" */
@@ -382,8 +398,10 @@ class TvViewModel(private val app: Context) : ViewModel() {
     var danmakuWindow by mutableStateOf<List<Danmaku>>(emptyList())
         private set
     private var danmakuJob: Job? = null
+
     /** 已装载窗口的起点；[DANMAKU_NOT_LOADED] 表示当前还没有可用窗口 */
     private var danmakuWindowStart = DANMAKU_NOT_LOADED
+
     /** 已装载窗口属于哪一集：位置可能一样，集不一样，用来拦住跨集的滞后结果 */
     private var danmakuWindowVid: String? = null
 
@@ -393,6 +411,7 @@ class TvViewModel(private val app: Context) : ViewModel() {
     private var lastPosMs = 0L
     private var lastDurMs = 0L
     private var lastWriteAt = 0L
+
     /** 已经处理过「播放结束」的 vid：片尾标记与 ExoPlayer 结束事件各来一次，必须只认一次 */
     private var endedVid: String? = null
 
@@ -407,8 +426,7 @@ class TvViewModel(private val app: Context) : ViewModel() {
     private val covers = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     /** 正在取封面的 cid；用 Set 语义去重，抢输的调用方直接返回 */
-    private val coverInFlight: MutableSet<String> =
-        java.util.concurrent.ConcurrentHashMap.newKeySet()
+    private val coverInFlight: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
     /**
      * 后台补一次封面，拿到后回写。与写记录完全解耦：记录该落盘就落盘，
@@ -537,35 +555,87 @@ class TvViewModel(private val app: Context) : ViewModel() {
     }
 
     /**
-     * 授权码兑换：一次性兑换券换回会话。
+     * 取一张登录二维码（授权门进屏时自动调一次，以及用户点「刷新二维码」时调）。
      *
-     * 返回 null 表示已授权，否则是按当前语言渲染好的失败原因。空输入不发给后端
-     * （必然白跑一趟），规整（去空白 / 大小写 / 长度）交给数据层的 [Auth.pair]。
-     * 失败路径上什么都没写：既不落盘，也没动 Api.TOKEN，用户留在编辑框里改一个字重试即可。
+     * 失败不带异常出去：屏幕层不碰 Api、也不自己造句子，失败一律在这里落成资源文案。
      */
-    suspend fun authorize(invite: String): String? {
-        if (invite.isBlank()) return app.getString(R.string.settings_auth_code_required)
+    suspend fun startQr(): QrTicketResult = try {
+        QrTicketResult.Ok(Auth.requestQr())
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: ApiException) {
+        Log.w("TvViewModel", "取登录二维码失败：${e.error}")
+        QrTicketResult.Failed(app.getString(authErrorRes(e.error)))
+    } catch (e: Exception) {
+        Log.w("TvViewModel", "取登录二维码异常：${e.message}")
+        QrTicketResult.Failed(app.getString(R.string.settings_auth_failed))
+    }
+
+    /**
+     * 轮询一次扫码状态。
+     *
+     * ok 的那一次在**数据层**就已经把会话落盘了（见 Auth.poll），这里只负责把它装进界面：
+     * [applyAuthorized] 一改 sessionState，AppRoot 的分支就从「门」切到正常界面，
+     * 门的轮询协程随组合作废——不需要任何"关掉轮询"的显式动作。
+     */
+    suspend fun pollQr(sid: String): QrPollResult = try {
+        val result = Auth.poll(sid)
+        if (result is WxPoll.Authorized) applyAuthorized(result.session)
+        QrPollResult.Ok(result)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: ApiException) {
+        Log.w("TvViewModel", "扫码状态轮询失败：${e.error}")
+        QrPollResult.Failed(app.getString(authErrorRes(e.error)))
+    } catch (e: Exception) {
+        Log.w("TvViewModel", "扫码状态轮询异常：${e.message}")
+        QrPollResult.Failed(app.getString(R.string.settings_auth_failed))
+    }
+
+    /**
+     * 一次性授权码激活（扫码之后补的那一步）。
+     *
+     * 返回 null 表示已授权，否则是按当前语言渲染好的失败原因。规整（大写 / 丢非字母数字）
+     * 交给数据层的 [Auth.activate]，它是唯一口径。
+     *
+     * [token] 来自上一次 wx_poll 的 need_code：没有它就不发请求——后端一定回
+     * 「登录状态已失效，请重新扫码」（实测），那一趟请求既没有信息量，
+     * 又会让用户把「会话失效」误读成「这张码错了」。
+     */
+    suspend fun activate(token: String, code: String): String? {
+        if (code.isBlank()) return app.getString(R.string.settings_auth_code_required)
+        if (token.isBlank()) return app.getString(R.string.gate_code_need_scan)
         return try {
-            // 落盘是 Auth.pair 内部同一次事务（token 与到期 / 绑定信息一起进 store），
+            // 落盘是 Auth.activate 内部同一次事务（token 与账号信息一起进 store），
             // 这里不再重复写：同一个 DataStore 开出第二条写路径只会让"半截会话"有机会出现
-            val session = Auth.pair(invite)
+            val session = Auth.activate(token, code)
             applyAuthorized(session)
             null
         } catch (e: CancellationException) {
             throw e
         } catch (e: ApiException) {
-            // 具体是哪一类由数据层分好，文案只从资源里取，这里不现编句子
-            val textRes = when (e.error) {
-                AppError.AuthFailed -> R.string.err_auth_failed
-                AppError.Unauthorized -> R.string.err_unauthorized
-                else -> R.string.settings_auth_failed
-            }
-            Log.w("TvViewModel", "授权码兑换失败：${e.error}")
-            app.getString(textRes)
+            Log.w("TvViewModel", "授权码激活失败：${e.error}")
+            app.getString(authErrorRes(e.error))
         } catch (e: Exception) {
-            Log.w("TvViewModel", "授权码兑换异常：${e.message}")
+            Log.w("TvViewModel", "授权码激活异常：${e.message}")
             app.getString(R.string.settings_auth_failed)
         }
+    }
+
+    /**
+     * 授权链路失败 → 资源 id。
+     *
+     * 为什么不复用 ui/components/ErrorText.kt：那个翻译点是 @Composable，ViewModel 里拿不到；
+     * 而屏幕层的约定是"拿现成文案"，不是"拿错误码自己翻"。两处取值口径因此保持一致，
+     * 只是取法不同（这里 getString，那里 stringResource）。
+     */
+    private fun authErrorRes(error: AppError): Int = when (error) {
+        AppError.AuthFailed -> R.string.err_auth_failed
+        AppError.Unauthorized -> R.string.err_unauthorized
+        AppError.Network -> R.string.err_network
+        AppError.Storage -> R.string.err_storage
+        AppError.EmptyPayload -> R.string.err_upstream
+        else -> R.string.settings_auth_failed
     }
 
     /** 已授权：作废旧缓存，把首页从零装一遍 */
@@ -602,7 +672,8 @@ class TvViewModel(private val app: Context) : ViewModel() {
         feedState.clear()
         homeError = AppError.Unauthorized
         // 复用 pop()：播放器销毁、详情态复位都在它里面，这里再写一遍清理必然漏一项
-        while (stack.size > 1 && pop()) { /* 逐层出栈，直到首页 */ }
+        while (stack.size > 1 && pop()) { /* 逐层出栈，直到首页 */
+        }
     }
 
     /**
@@ -612,8 +683,21 @@ class TvViewModel(private val app: Context) : ViewModel() {
      * 清 token 与盘上的会话 → 会话态置空（AppRoot 的分支自动切到门）→ 收掉首页与路由栈。
      * 不清历史 / 收藏 / 已完成 / 播放记录：那些是本机数据，与凭据是否有效无关。
      */
-    private suspend fun expireAuth() {
-        Log.w("TvViewModel", "后台判定授权过期：作废本地会话，回到授权门")
+    private suspend fun expireAuth() = revokeSession("后台判定授权过期")
+
+    /**
+     * 用户在设置「网络与数据」里主动清除授权：作废本机凭据，退回授权门重新扫码。
+     *
+     * 与 [expireAuth] 只是触发原因不同，该清的东西一模一样，所以共用 [revokeSession]：
+     * 分成两份写，早晚有一份漏掉"路由栈收回栈底"或"先作废凭据再改界面"的顺序。
+     */
+    fun signOut() {
+        viewModelScope.launch { revokeSession("用户主动清除授权") }
+    }
+
+    /** 作废本地会话并退回授权门。[reason] 只进日志，说明这次是谁触发的 */
+    private suspend fun revokeSession(reason: String) {
+        Log.w("TvViewModel", "$reason：作废本地会话，回到授权门")
         // 先作废凭据再改界面状态：中间这一小段里任何抢跑的请求都必须已经是"无凭据"短路，
         // 而不是带着刚被判死的 token 再打一次后端
         Auth.signOut()
@@ -656,6 +740,7 @@ class TvViewModel(private val app: Context) : ViewModel() {
                 detailCid.value = dest.cid
                 loadDetail(dest)
             }
+
             is Dest.Player -> {
                 stack.add(dest)
                 startPlayer(dest)
@@ -672,11 +757,13 @@ class TvViewModel(private val app: Context) : ViewModel() {
                 playerJob?.cancel()
                 player = PlayerUi.Loading
             }
+
             is Dest.Detail -> {
                 detailJob?.cancel()
                 // === 收藏模块（勿删）=== 退详情后没有"当前剧"了，收藏态回到 false，避免下一部剧首帧闪旧值
                 detailCid.value = ""
             }
+
             else -> Unit
         }
         return true
@@ -757,8 +844,7 @@ class TvViewModel(private val app: Context) : ViewModel() {
      * 老版本升上来没有 pageFetchedAt 这个 key，直接把它当 0 会让每次升级后的
      * 第一次进首页都白刷一轮。取最小值是保守的那一侧：最旧的一份过期了就该刷。
      */
-    private fun cacheThreshold(cached: Map<String, HomeSnapshot>): Long =
-        cached.values.minOfOrNull { it.fetchedAt } ?: 0L
+    private fun cacheThreshold(cached: Map<String, HomeSnapshot>): Long = cached.values.minOfOrNull { it.fetchedAt } ?: 0L
 
     /**
      * 进首页路由时的门禁：只判「数据是不是老过 30 分钟」，不负责首次装载。
@@ -999,8 +1085,7 @@ class TvViewModel(private val app: Context) : ViewModel() {
                 //    刷新时列表里已经有内容了，再灌一次缓存只会把用户刚看到的
                 //    新内容换回旧内容，那是一次可见的倒退。
                 if (homeFeeds[tab] == null) {
-                    withContext(Dispatchers.IO) { homeCache.load(tab.name) }
-                        ?.let { snapshot -> applyCache(tab, snapshot) }
+                    withContext(Dispatchers.IO) { homeCache.load(tab.name) }?.let { snapshot -> applyCache(tab, snapshot) }
                 }
 
                 // 2) 网络：重拉这一屏并整体覆盖
@@ -1319,8 +1404,8 @@ class TvViewModel(private val app: Context) : ViewModel() {
      * 播放设置的数据源。P2-C 的播放器设置页直接 collect 它渲染控件，
      * 保存走 [updatePlayerSettings]，不需要自己碰 DataStore。
      */
-    val playerSettings: StateFlow<PlayerSettings> = playerSettingsStore.settings
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PlayerSettings())
+    val playerSettings: StateFlow<PlayerSettings> =
+        playerSettingsStore.settings.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PlayerSettings())
 
     /**
      * 保存播放设置。乐观写：调用方已经在自己的 state 里改好并渲染了，
@@ -1406,8 +1491,7 @@ class TvViewModel(private val app: Context) : ViewModel() {
                 val series = Repo.series(dest.cid)
                 episodes = series.episodes
                 // 首页"从头播放"只给 vid，集号未必对得上；以集数表里的真实下标为准，否则连播会跳集
-                val episodeIndex = series.episodes.firstOrNull { it.vid == dest.vid }?.index
-                    ?: dest.episodeIndex
+                val episodeIndex = series.episodes.firstOrNull { it.vid == dest.vid }?.index ?: dest.episodeIndex
                 val title = dest.title.ifBlank { series.title }
                 playTitle = series.title.ifBlank { title }
                 // b) 档位 + 整片 hls
@@ -1473,11 +1557,8 @@ class TvViewModel(private val app: Context) : ViewModel() {
         val pos = positionMs.coerceAtLeast(0L)
         // 起点不能为负（后端不接受负区间）：片头 15 秒内窗口自然收缩成 [0, pos+45s)
         val start = (pos - DANMAKU_LEAD_MS).coerceAtLeast(0L)
-        val reusable = !force &&
-            danmakuWindowVid == vid &&
-            danmakuWindowStart != DANMAKU_NOT_LOADED &&
-            pos >= danmakuWindowStart &&
-            pos <= danmakuWindowStart + DANMAKU_REFRESH_WITHIN_MS
+        val reusable =
+            !force && danmakuWindowVid == vid && danmakuWindowStart != DANMAKU_NOT_LOADED && pos >= danmakuWindowStart && pos <= danmakuWindowStart + DANMAKU_REFRESH_WITHIN_MS
         if (reusable) return
         // 新窗口开始就取消上一片的请求：连按 seek 不该积一堆没人要的结果
         danmakuJob?.cancel()
@@ -1535,8 +1616,7 @@ class TvViewModel(private val app: Context) : ViewModel() {
      * 兜底时会把第 1 集写成「第 0 集」）。返回值仍随集号变化，
      * 播放页 initialStartMs 的 remember(cid, episodeLabel) 语义不变。
      */
-    private fun labelOf(episodeIndex: Int): String =
-        app.getString(R.string.state_episode_index, episodeIndex + 1)
+    private fun labelOf(episodeIndex: Int): String = app.getString(R.string.state_episode_index, episodeIndex + 1)
 
     /**
      * 换档位：PlayerScreen 以 url 为 key 重建播放器，所以这里必须把当前进度当作

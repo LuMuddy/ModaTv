@@ -28,6 +28,7 @@ Thumbs.db
 # Signing
 *.jks
 *.keystore
+/keys/
 
 # 私有后端契约（动作名、请求头、响应字段），只留在本地，不进仓库
 docs/BACKEND.md

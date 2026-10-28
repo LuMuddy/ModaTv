@@ -112,7 +112,10 @@ fun AppRoot() {
         // b) 确定未授权：整屏只有门。Dest 的分支一个都不进组合——
         // 不是「画出来再用遮罩盖住」：盖住的内容照样在组合里、照样会发请求。
         session == null -> AuthGateScreen(
-            onAuthorize = vm::authorize,
+            // 扫码是主路径：进屏自动取码、每 1.5s 轮询一次；授权码只在 need_code / 取码失败时补位
+            onRequestQr = vm::startQr,
+            onPollQr = vm::pollQr,
+            onActivate = vm::activate,
             // 退出走 AppRoot 里已有的那一份拿法，不另造退出机制
             onExit = exitApp,
         )
@@ -460,10 +463,11 @@ private fun SettingsGroupRoute(
         )
         SettingsSectionId.Network -> NetworkSettingsSection(
             session = session,
-            onAuthorize = { invite -> vm.authorize(invite) },
             onClearHistory = vm::clearHistory,
             onClearFavorites = vm::clearFavorites,
             onClearSearchHistory = vm::clearSearchHistory,
+            onClearCompleted = vm::clearCompleted,
+            onClearAuth = vm::signOut,
         )
         // 关于子页有两行可点：检查更新与版权声明（首焦点给前者）
         SettingsSectionId.About -> AboutSettingsSection(
