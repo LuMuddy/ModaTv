@@ -22,6 +22,10 @@ fun appErrorText(error: AppError): String = when (error) {
     AppError.EmptyPlayUrl -> stringResource(R.string.err_empty_play_url)
     is AppError.Upstream -> stringResource(R.string.err_upstream)
     AppError.Network -> stringResource(R.string.err_network)
+    // 未授权与授权码失效是两件事：前者用户能做的是「去设置填一个码」，
+    // 后者是「手里这个码不能用了」，混成一句就说不出用户下一步该做什么
+    AppError.Unauthorized -> stringResource(R.string.err_unauthorized)
+    AppError.AuthFailed -> stringResource(R.string.err_auth_failed)
     AppError.Storage -> stringResource(R.string.err_storage)
     AppError.Unknown -> stringResource(R.string.err_unknown)
 }

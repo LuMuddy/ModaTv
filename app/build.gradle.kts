@@ -30,9 +30,6 @@ android {
         versionCode = (project.findProperty("modatv.versionCode") as String?)?.toIntOrNull() ?: 1
         versionName = project.findProperty("modatv.versionName") as String? ?: "1.0.0"
 
-        buildConfigField("String", "API_BASE", literal(secret("modatv.apiBase")))
-        buildConfigField("String", "DEVICE_TOKEN", literal(secret("modatv.deviceToken")))
-        buildConfigField("String", "DEVICE_FP", literal(secret("modatv.deviceFp")))
         buildConfigField("String", "HOT_WORDS_APP_ID", literal(secret("modatv.hotWordsAppId")))
         buildConfigField("String", "HOT_WORDS_APP_KEY", literal(secret("modatv.hotWordsAppKey")))
 

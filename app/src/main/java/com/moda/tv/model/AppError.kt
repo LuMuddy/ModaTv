@@ -31,6 +31,20 @@ sealed interface AppError {
     data object Network : AppError
 
     /**
+     * 未授权 / 凭据失效：本地没有 token，或服务端判定 authorized=false。
+     * 与 [Network] 分开，是因为用户能做的事不同——这里要做的是"重新填授权码"，
+     * 而不是"检查网络后重试"。
+     */
+    data object Unauthorized : AppError
+
+    /**
+     * 授权码兑换失败（无效、已使用、过期）。
+     * 与 [Unauthorized] 分开：兑换失败发生在"还没有凭据"的时刻，提示要把用户带回填码的输入框；
+     * [Unauthorized] 是已有凭据被判失效，提示是"凭据过期了"。
+     */
+    data object AuthFailed : AppError
+
+    /**
      * 本地存储不可用：DataStore 读写失败（恢复默认、落盘都走这里）。
      * 与 [Unknown] 分开，是因为用户能做的事不同——存储坏了「稍后重试」是错的提示。
      */
