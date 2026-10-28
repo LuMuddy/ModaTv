@@ -1851,8 +1851,15 @@ class TvViewModel(private val app: Context) : ViewModel() {
         updateCheckJob = viewModelScope.launch {
             try {
                 val latest = Repo.latestRelease()
-                // 版本比较是纯函数（VersionRules），预发布后缀不参与强弱判定
-                if (!VersionRules.isNewer(latest.versionName, BuildConfig.VERSION_NAME)) {
+                // 判据在 VersionRules 里：优先比远端 version.json 的 versionCode，
+                // 拿不到（v1.0.0 那种老 Release 没这个文件）才回落比版本名
+                val newer = VersionRules.isNewer(
+                    remoteCode = latest.versionCode,
+                    remoteName = latest.versionName,
+                    localCode = BuildConfig.VERSION_CODE,
+                    localName = BuildConfig.VERSION_NAME,
+                )
+                if (!newer) {
                     // 查成功了、确认已是最新：落 Latest 而不是 Idle——Idle 是"没得说"，
                     // 拿去显示「已是最新」会让冷启动那几帧和联网失败后都在说谎
                     updateUi = UpdateUi.Latest

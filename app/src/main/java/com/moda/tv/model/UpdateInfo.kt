@@ -19,4 +19,10 @@ data class UpdateInfo(
      * 镜像会换、会死，那是取数层的策略，不是「这一版是什么」的事实。
      */
     val apkUrl: String,
+    /**
+     * 远端那一版的 Android versionCode，来自同一次 Release 挂的 version.json。
+     * 老版本（v1.0.0 及更早）没有这个文件，所以是 null——「不清楚」和「等于 0」不能混成同一个值，
+     * 否则判定会拿一个不存在的版本码去比，把「没数据」读成「比本机旧」。
+     */
+    val versionCode: Int? = null,
 )

@@ -25,7 +25,11 @@ android {
         targetSdk = 34
         // 发版时由 CI 从 git tag 推导，用 -Pmodatv.versionName / -Pmodatv.versionCode 覆盖；
         // 本地不带 -P 构建就走这里的默认值，所以不必为了发一次版先改代码再提交一次。
-        versionCode = (project.findProperty("modatv.versionCode") as String?)?.toIntOrNull() ?: 1
+        //
+        // versionCode 的编码是 major*10000 + minor*100 + patch（1.0.1 → 10001），
+        // CI 用同一条公式从 tag 复算，两处对不上就是发版事故——改公式时两边一起改。
+        // 每个版本段必须小于 100，否则会串段（1.0.100 与 1.1.0 撞号）。
+        versionCode = (project.findProperty("modatv.versionCode") as String?)?.toIntOrNull() ?: 10001
         versionName = project.findProperty("modatv.versionName") as String? ?: "1.0.1"
 
         /**

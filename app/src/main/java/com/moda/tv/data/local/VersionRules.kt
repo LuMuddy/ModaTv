@@ -33,6 +33,23 @@ object VersionRules {
 
     fun isNewer(candidate: String, current: String): Boolean = compare(candidate, current) > 0
 
+    /**
+     * 「要不要提示更新」的唯一判据：**优先比 versionCode**，拿不到才回落比版本名。
+     *
+     * 为什么不再只看版本名：版本名是给人读的字符串，"1.0.10" 与 "1.1.0" 谁新要靠切段规则
+     * 去猜，规则错一次就是「某些版本永远收不到更新」这种只在用户侧才暴露的故障。
+     * versionCode 是单调整数，Android 自己也是按它判覆盖安装，比它没有歧义。
+     *
+     * 为什么必须保留版本名这条回落：version.json 是 v1.0.1 起才挂上的，v1.0.0 的
+     * Release 里没有；只认 versionCode 等于把老版本用户永久留在旧版上。
+     *
+     * [remoteCode] 为 null（没有 version.json）或 <= 0（文件坏了）都走回落：
+     * 一个不可信的数字比没有数字更危险。
+     */
+    fun isNewer(remoteCode: Int?, remoteName: String, localCode: Int, localName: String): Boolean =
+        if (remoteCode != null && remoteCode > 0) remoteCode > localCode
+        else isNewer(remoteName, localName)
+
     private fun segments(version: String): List<Long> {
         val trimmed = version.trim()
         // tag 叫 v1.2.3，VersionName 叫 1.2.3，两者必须能直接比

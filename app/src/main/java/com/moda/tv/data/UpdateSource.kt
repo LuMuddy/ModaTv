@@ -9,6 +9,8 @@ import java.io.StringReader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.Request
+import org.json.JSONException
+import org.json.JSONObject
 import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserException
 
@@ -41,6 +43,16 @@ object UpdateSource {
     private const val ATOM_URL = "https://github.com/$OWNER/$REPO/releases.atom"
 
     /**
+     * 同一版 Release 上挂的 version.json：版本名 + versionCode 两份机器可读的票据。
+     *
+     * 为什么要额外取它：atom 里只有 tag 与正文，没有 versionCode，而「有没有新版」
+     * 该按单调整数判（见 [VersionRules.isNewer] 的四参数重载）。`/releases/latest/download/`
+     * 恒指向最新一版，不用先解析 feed 再拼版本号，少一处拼接就少一处错。
+     */
+    private const val VERSION_JSON_URL =
+        "https://github.com/$OWNER/$REPO/releases/latest/download/version.json"
+
+    /**
      * 下载镜像：只代理 release 的 asset 路径。
      * 早先的 ghfast.top 已经停服（TLS 直接断开，实测连不上），换 gh-proxy.com（实测 Range 206）。
      * 镜像随时可能没，所以它只是**候选之一**，直连永远排在后面兜底（见 [apkUrls]）。
@@ -63,7 +75,38 @@ object UpdateSource {
      * 这是「没有新版」而不是故障，调用方按「已是最新」处理即可。
      */
     suspend fun latest(): UpdateInfo = withContext(Dispatchers.IO) {
-        parseLatest(fetchAtom())
+        // 顺序不能反：feed 决定「这是哪一版」，version.json 只回答「这一版排第几」。
+        // 后者拿不到就留 null，由 VersionRules 回落到版本名比较。
+        parseLatest(fetchAtom()).copy(versionCode = fetchRemoteCode())
+    }
+
+    /**
+     * 取 version.json 里的 versionCode。
+     *
+     * 失败一律回 null，且**不抛**：更新是附属功能，这层只回答「有没有更可信的数字」。
+     * 没挂文件（v1.0.0 那种老 Release）、网络不通、JSON 坏了，都交给版本名回落——
+     * 绝不能因为少了这份票据就让整个检查失败，那等于把一条冗余路径变成单点。
+     */
+    private fun fetchRemoteCode(): Int? {
+        val req = Request.Builder().url(VERSION_JSON_URL).get().build()
+        return try {
+            Api.http.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    Log.i(TAG, "version.json 取不到：HTTP " + resp.code)
+                    null
+                } else {
+                    JSONObject(resp.body?.string().orEmpty())
+                        .optInt("versionCode", 0)
+                        .takeIf { it > 0 }
+                }
+            }
+        } catch (e: IOException) {
+            Log.i(TAG, "version.json 网络失败：" + e.message)
+            null
+        } catch (e: JSONException) {
+            Log.i(TAG, "version.json 解析失败：" + e.message)
+            null
+        }
     }
 
     /**
