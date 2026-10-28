@@ -117,7 +117,7 @@ fun AuthGateScreen(
     val fieldFocus = remember { FocusRequester() }
     val failureFallback = stringResource(R.string.settings_auth_failed)
     // 提交前的本地闸门文案：8 位字母数字。放在这里而不是 data 层，是因为它只解释「这一屏的输入」，
-    // 同一个错误从手机扫码进来时话术不一样。
+    // 换个入口（设置页那一行）话术就不一样。
     val invalidCodeHint = stringResource(R.string.gate_code_invalid)
 
     // 首焦点必须落在输入框：门只有三个可聚焦点，焦点空着时遥控器按确认毫无反应。

@@ -386,7 +386,7 @@ internal fun authStatusText(session: AuthSession?): String = if (session == null
 }
 
 /**
- * 网络与数据子页：授权码（含编辑态）/ 授权状态 / 扫码输入 / 三项清空。
+ * 网络与数据子页：授权码（含编辑态）/ 授权状态 / 三项清空。
  *
  * 屏幕自身不碰网络也不碰凭据：兑换与落盘全在回调的实现方（SettingsGroupRoute → TvViewModel.authorize）
  * 手里，这里只把结果渲染出来。授权成功后 [session] 会从上层回灌，
@@ -404,8 +404,6 @@ internal fun NetworkSettingsSection(
     onClearSearchHistory: () -> Unit,
 ) {
     var editing by remember { mutableStateOf(false) }
-    // 扫码弹窗的显隐。只有它为 true 时 LAN 服务才在监听，关闭即释放端口
-    var lanConfig by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf("") }
     var checking by remember { mutableStateOf(false) }
     var notice by remember { mutableStateOf<Notice?>(null) }
@@ -498,8 +496,8 @@ internal fun NetworkSettingsSection(
         SectionCard {
             if (session == null) {
                 // 未授权：这一行就是入口，点进去在它下面展开输入框。
-                // 扫码输入更省事，但手动输入必须始终可用——手机不在手边、
-                // 或者局域网不通时，用户仍然要能自己把码敲进去。
+                // 手动输入是唯一的授权入口，所以这一行必须始终可点、随时可编辑：
+                // 遥控器上没有第二条能让用户把 8 位码敲进来的路。
                 SettingRow(
                     label = stringResource(R.string.settings_auth_code),
                     value = stringResource(R.string.settings_auth_unauthorized),
@@ -601,36 +599,26 @@ internal fun NetworkSettingsSection(
                 }
             }
 
-            // 扫码输入作为可选入口：手机打字比遥控器快得多。
-            // 兑换同样由数据层完成（LanConfigServer → Auth.pair），成功后本页靠 Flow 回灌。
-            SettingRow(
-                label = stringResource(R.string.settings_auth_scan),
-                value = stringResource(R.string.settings_auth_scan_value),
-                chevron = true,
-                modifier = Modifier.then(columnFocus.itemModifier(2)),
-                onClick = { lanConfig = true },
-            )
-
             // 数据清理：三项都是不可撤销的批量删除，逐项二次确认
             SettingRow(
                 label = stringResource(R.string.settings_network_clear_history),
                 value = stringResource(R.string.common_clear),
                 chevron = true,
-                modifier = Modifier.then(columnFocus.itemModifier(3)),
+                modifier = Modifier.then(columnFocus.itemModifier(2)),
                 onClick = { pendingClear = PendingClear.History },
             )
             SettingRow(
                 label = stringResource(R.string.settings_network_clear_favorites),
                 value = stringResource(R.string.common_clear),
                 chevron = true,
-                modifier = Modifier.then(columnFocus.itemModifier(4)),
+                modifier = Modifier.then(columnFocus.itemModifier(3)),
                 onClick = { pendingClear = PendingClear.Favorites },
             )
             SettingRow(
                 label = stringResource(R.string.settings_network_clear_search),
                 value = stringResource(R.string.common_clear),
                 chevron = true,
-                modifier = Modifier.then(columnFocus.itemModifier(5)),
+                modifier = Modifier.then(columnFocus.itemModifier(4)),
                 onClick = { pendingClear = PendingClear.SearchHistory },
             )
             HintText(stringResource(R.string.settings_auth_hint))
@@ -666,19 +654,6 @@ internal fun NetworkSettingsSection(
                 notice = Notice(doneText, failed = false)
             },
             onDismiss = { pendingClear = null },
-        )
-    }
-
-    // 扫码弹窗：服务在它进入组合时启动、离开组合时停止（见 LanConfigDialog 的 DisposableEffect）。
-    // 兑换与落盘都在数据层内部完成，本弹窗只回报关与「改成手动输入」两个动作。
-    if (lanConfig) {
-        LanConfigDialog(
-            onDismiss = { lanConfig = false },
-            onManualEdit = {
-                // 降级路径：拿不到局域网 IP 时改为手动输入（系统输入法）
-                lanConfig = false
-                startEdit()
-            },
         )
     }
 }

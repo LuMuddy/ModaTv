@@ -20,7 +20,7 @@
     <string name="settings_group_playback_title">播放设置</string>
     <string name="settings_group_playback_desc">播放器内核、解码方式、默认倍速与片头片尾跳过</string>
     <string name="settings_group_network_title">网络与数据</string>
-    <string name="settings_group_network_desc">授权码、扫码授权与本地数据清理</string>
+    <string name="settings_group_network_desc">授权码与本地数据清理</string>
     <string name="settings_group_about_title">关于</string>
     <string name="settings_group_about_desc">版本、构建与版权信息</string>
     <string name="settings_copyright_value">免费软件 · 查看</string>
@@ -44,8 +44,6 @@
     <string name="settings_network_subtitle">授权码只能兑换一次，兑换成功后立即生效，无需重启应用。</string>
     <string name="settings_auth_code">授权码</string>
     <string name="settings_auth_submit">授权</string>
-    <string name="settings_auth_scan">扫码输入授权码</string>
-    <string name="settings_auth_scan_value">打开二维码</string>
     <string name="settings_auth_authorized">已授权</string>
     <string name="settings_auth_unauthorized">未授权</string>
     <string name="settings_auth_invalid">授权码是 8 位字母或数字</string>
@@ -76,22 +74,6 @@
     <string name="clear_search_title">清空全部搜索历史？</string>
     <string name="clear_search_message">将清空全部搜索历史，删除后无法恢复。</string>
     <string name="clear_search_done">已清除搜索历史</string>
-
-    <!-- ==================== 局域网扫码弹窗 ==================== -->
-    <string name="lan_title">局域网扫码授权</string>
-    <string name="lan_qr_content_desc">扫码配置二维码</string>
-    <string name="lan_no_lan">未连接到局域网</string>
-    <string name="lan_qr_failed">二维码生成失败</string>
-    <string name="lan_status_no_lan">未连接到局域网，无法扫码配置</string>
-    <string name="lan_status_start_failed">本地服务启动失败（端口被占用）</string>
-    <string name="lan_status_not_running">本地服务未运行</string>
-    <string name="lan_status_running">服务运行中 · 仅本弹窗打开期间可用</string>
-    <string name="lan_phone_url">手机访问地址</string>
-    <string name="lan_lan_address">局域网地址</string>
-    <string name="lan_service_not_running">服务未运行</string>
-    <string name="lan_hint_no_lan">未连接到局域网，无法扫码。可以关闭这里，在「授权码」一行手动输入 8 位授权码。</string>
-    <string name="lan_hint_scan">用手机扫描左侧二维码，在同一局域网里填写 8 位授权码，提交后电视端立即完成授权。</string>
-    <string name="lan_manual_edit">手动编辑</string>
 
     <!-- ==================== 版权声明弹窗（设置页「版权声明」行复用同一条 copyright_title） ==================== -->
     <string name="copyright_title">版权声明</string>

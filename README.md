@@ -122,7 +122,7 @@
 
 **设置**
 - 菜单 + 三个子页：播放设置（内核 / 解码 / 默认倍速 / 自动跳片头片尾）、
-  网络与数据（授权码、扫码配置、恢复默认、数据清理）、关于（版本 / 构建号 / Android 版本 /
+  网络与数据（授权码、恢复默认、数据清理）、关于（版本 / 构建号 / Android 版本 /
   分辨率，末行是版权声明入口）
 - 菜单页只留三张「进去改东西」的分组卡：版权声明是一次性查看，不占菜单位，混进菜单会让
   「能改的」和「只能看的」两件事塌成一层
@@ -153,7 +153,6 @@
 | IJK 内核 | xyz.doikki.android.dkplayer:player-ijk 3.3.7（native 按 ABI 裁剪到 arm64-v8a / armeabi-v7a） |
 | OkHttp | 4.12.0 |
 | DataStore Preferences | 1.1.7 |
-| ZXing core | 3.5.3（仅生成二维码矩阵，不引 android-embedded） |
 
 依赖全部显式写在 `app/build.gradle.kts`，未使用 version catalog。
 
@@ -192,7 +191,7 @@ minSdk 23 覆盖大多数电视盒子；Android TV / Google TV 模拟器可直�
 
 凭据是**授权码换回来的 token**，不是从构建配置里读出来的：
 
-- 首次使用只在「设置 → 网络与数据 → 授权码」里填一次 8 位授权码（或用手机扫码在同一局域网内填），
+- 首次使用只在「设置 → 网络与数据 → 授权码」里用遥控器手动填一次 8 位授权码，
   App 拿它去后端兑换一个 token，连同到期 / 绑定信息存进本地 DataStore，之后所有请求都用这个 token，
   不需要再填；
 - 授权码是一次性兑换券：用过即废，也可以被管理员吊销；token 一旦被后台判死（HTTP 401 或
@@ -215,7 +214,6 @@ minSdk 23 覆盖大多数电视盒子；Android TV / Google TV 模拟器可直�
 ## 项目结构
 
 ```
-app/src/main/assets/index.html   手机端扫码配置页（LanConfigServer 读取后填充占位符）
 app/src/main/res/values/strings.xml       通用文案：设置页 / 设置子页 / 错误提示 / 公共词
 app/src/main/res/values/strings_*.xml     按模块拆分：core / data / data2 / detail / home /
                                           library / player / search / state
@@ -234,7 +232,6 @@ app/src/main/java/com/moda/tv/
 │   ├── CarouselSource.kt   v.qq.com 首页推荐位 → cid 列表
 │   ├── ChannelSource.kt    v.qq.com 频道页 → 19 个分类的内容
 │   ├── FileName.kt         下载文件名清洗
-│   ├── LanConfigServer.kt  局域网扫码配置的临时 HTTP 服务 + 二维码生成
 │   └── local/              DataStore 存储（授权会话 + 按剧的内核 / 解码覆盖）+ 本机指纹 + 片头片尾纯规则
 └── ui/
     ├── AppRoot.kt          路由栈渲染 + 退出确认 + 版权声明弹窗
@@ -271,33 +268,6 @@ app/src/main/java/com/moda/tv/
 | `moda_playback_override` | 每部剧在播放页单独设过的内核 / 解码（按 `cid`，最多 60 条 LRU；与默认值相同即删键；删历史 / 清空历史时连带清理） |
 | `moda_auth_session` | 授权会话：授权码换回来的 token + 到期 / 绑定信息（键缺失 = 未授权） |
 | `moda_copyright_notice` | 已确认版权声明的 `versionCode` |
-
----
-
-## 局域网扫码填授权码
-
-电视上敲 8 位授权码同样是反人类的，所以设置页提供一次性的手机端填写入口：
-
-1. 打开「扫码配置授权码」，弹出二维码；
-2. 服务只在弹窗打开期间监听（默认 9999，被占用时顺延最多 20 个端口），关闭立即归还端口；
-3. 手机浏览器打开二维码中的地址（或直接输入 `http://<电视IP>:9999`），输入 8 位授权码并提交；
-4. 不做鉴权——端口只在弹窗打开时监听，能连上就能改；
-5. 手机只负责把授权码送到电视上：兑换 token、落盘、失效判定都由应用侧负责，服务本身只处理协议。
-
-没有前台服务、没有常驻单例、没有延时回收——对象被丢弃即彻底消失。
-
-手机端页面本身是 `app/src/main/assets/index.html`，**可以直接用浏览器双击打开预览样式**：
-模板里的占位符要么写在 HTML 注释里、要么被一小段脚本清掉，直接打开不会看到 `__VALUE__` 这类字面量。
-
-它只有两个占位符，`LanConfigServer.pageHtml` 负责替换：
-
-| 占位符 | 替换成 |
-| --- | --- |
-| `<!--BANNER_SLOT-->` | 成功/失败提示条，无提示时为空串 |
-| `__VALUE__` | 当前生效的授权码（已做 HTML 转义，未授权时为空串） |
-
-表单的 `action` 固定为 `/save`，不再需要拼接。改文案或样式只动这个 HTML 文件；
-两个占位符必须保留（提示条那块留空就等于没有提示）。资源读取失败时退回内置兜底页，不会白屏。
 
 ---
 
