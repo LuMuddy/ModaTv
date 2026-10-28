@@ -194,11 +194,37 @@ jobs:
         env:
           TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          API="https://api.github.com/repos/$GITHUB_REPOSITORY/releases"
           python3 -c 'import json;print(json.dumps({"body":open("RELEASE_NOTES.md",encoding="utf-8").read()}))' > /tmp/body.json
-          curl -sS --fail-with-body -X PATCH \
+
+          code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' -X PATCH \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" \
-            -d @/tmp/body.json \
-            | python3 -c 'import json,sys; print("--- 已写入的正文 ---"); print(json.load(sys.stdin)["body"])'
+            "$API/tags/$GITHUB_REF_NAME" -d @/tmp/body.json || echo 000)
+          echo "按 tag 改正文：HTTP $code"
+
+          if [ "$code" != "200" ]; then
+            # tag 被删过又重推时 releases/tags/<tag> 可能找不到，退回按 id 改
+            RID=$(curl -sS -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
+              "$API?per_page=30" | python3 -c 'import json,os,sys
+          tag = os.environ["GITHUB_REF_NAME"]
+          print(next((r["id"] for r in json.load(sys.stdin) if r["tag_name"] == tag), ""))' || true)
+            echo "按 tag 找不到时，列表里的 release id：${RID:-<none>}"
+            if [ -n "${RID:-}" ]; then
+              code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' -X PATCH \
+                -H "Authorization: Bearer $TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "$API/$RID" -d @/tmp/body.json || echo 000)
+              echo "按 id 改正文：HTTP $code"
+            fi
+          fi
+
+          # 失败时把服务端的话打成 annotation：它能在 API 里读到，不必翻日志
+          if [ "$code" != "200" ]; then
+            echo "::error::写入发版说明失败 HTTP $code"
+            python3 -c 'print(open("/tmp/resp.json",encoding="utf-8").read()[:400])' || true
+            echo "::error::$(head -c 300 /tmp/resp.json 2>/dev/null | tr '\n' ' ')"
+            exit 1
+          fi
+          python3 -c 'import json;print("--- 已写入的正文 ---");print(json.load(open("/tmp/resp.json",encoding="utf-8"))["body"])'
