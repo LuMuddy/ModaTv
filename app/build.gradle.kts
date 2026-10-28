@@ -26,7 +26,7 @@ android {
         // 发版时由 CI 从 git tag 推导，用 -Pmodatv.versionName / -Pmodatv.versionCode 覆盖；
         // 本地不带 -P 构建就走这里的默认值，所以不必为了发一次版先改代码再提交一次。
         versionCode = (project.findProperty("modatv.versionCode") as String?)?.toIntOrNull() ?: 1
-        versionName = project.findProperty("modatv.versionName") as String? ?: "1.0.0"
+        versionName = project.findProperty("modatv.versionName") as String? ?: "1.0.1"
 
         /**
          * 只保留 TV 盒子真正常见的两个 ABI。
