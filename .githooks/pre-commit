@@ -23,11 +23,13 @@ files=$(git diff --cached --name-only --diff-filter=ACM \
 
 if [ -n "$files" ]; then
   # 2.1 凭据键后面跟了值。local.properties.example 里的空值是合法的，
-  #     这四条只有被填上真实值才拦——那正是过去最可能翻车的地方。
+  #     热词只有被填上真实值才拦——那正是过去最可能翻车的地方。
+  #     授权码不进 local.properties（它在设置页输入，换回的 token 存在应用 DataStore 里），
+  #     所以这里只剩热词两个键；设备指纹 / 令牌的形态仍留着，防止旧代码回流。
   #     只认「键 = 值」这种配置形态：代码里的赋值语句与请求头调用都不该被误报。
-  hits=$(grep -nIE '(modatv\.(deviceToken|deviceFp|hotWordsAppId|hotWordsAppKey)|device_?fp|device_?token|x-auth-(device|fp))[[:space:]]*=[[:space:]]*[^[:space:]]' $files 2>/dev/null || true)
+  hits=$(grep -nIE '(modatv\.(hotWordsAppId|hotWordsAppKey)|device_?fp|device_?token|x-auth-(device|fp))[[:space:]]*=[[:space:]]*[^[:space:]]' $files 2>/dev/null || true)
   if [ -n "$hits" ]; then
-    say "✗ 疑似设备凭据被写进了仓库（值必须留在本地 local.properties）："
+    say "✗ 疑似凭据被写进了仓库（热词凭据必须留在本地 local.properties）："
     printf '    %s\n' $hits >&2
     fail=1
   fi
