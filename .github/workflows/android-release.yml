@@ -78,23 +78,25 @@ jobs:
 
       # 签名配置是可选的（本地没密钥也要能编），所以这里必须验：没有这一步，
       # 缺 secrets 时会静默产出一个装不上的 unsigned 包，而 Release 照发不误。
-      - name: 校验签名并命名产物
+      # 注意判据只剩 apksigner：产物名由 app/build.gradle.kts 的 outputFileName 定死成
+      # ModaTv<版本>.apk，未签名包也是这个名字（不再带 -unsigned 后缀，实测），
+      # 所以「文件名对不对」只回答「构建出没出包」，签没签只有 apksigner 说了算。
+      - name: 校验签名
         run: |
           set -euo pipefail
-          APK=app/build/outputs/apk/release/app-release.apk
+          APK="app/build/outputs/apk/release/ModaTv${VERSION}.apk"
           if [ ! -f "$APK" ]; then
-            echo "::error::没有生成已签名的 $APK，实际产物："
+            echo "::error::没有生成 $APK，实际产物："
             ls -l app/build/outputs/apk/release/ || true
             exit 1
           fi
           APKSIGNER="$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n 1)"
           "$APKSIGNER" verify --print-certs "$APK"
-          cp "$APK" "ModaTv-${VERSION}.apk"
 
       - uses: actions/upload-artifact@v4
         with:
           name: ModaTv-apk
-          path: ModaTv-*.apk
+          path: app/build/outputs/apk/release/ModaTv*.apk
           if-no-files-found: error
 
       - name: 发布到 GitHub Release
@@ -104,5 +106,5 @@ jobs:
           # 名字必须是 tag 本身：客户端从 atom 的 <title> 里剥掉前导 v 得到版本号，
           # 不写 name 就依赖 action 的默认值，默认值变了客户端会静默读不到。
           name: ${{ github.ref_name }}
-          files: ModaTv-*.apk
+          files: app/build/outputs/apk/release/ModaTv*.apk
           generate_release_notes: true

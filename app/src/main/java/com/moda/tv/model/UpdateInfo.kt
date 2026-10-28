@@ -4,7 +4,7 @@ package com.moda.tv.model
  * 一次版本检查的结果：UI 只读这三个字段，不需要再回头查任何接口。
  *
  * 为什么强调 [versionName] 不带前导 v：比较（[com.moda.tv.data.local.VersionRules]）
- * 与 APK 直链（镜像前缀 + "/releases/download/v<version>/ModaTv-<version>.apk"）都以它为准，
+ * 与 APK 直链（镜像前缀 + "/releases/download/v<version>/ModaTv<version>.apk"）都以它为准，
  * 而 atom feed 的标题是带 v 的 "v1.2.3"。剥一次、放在这里，下游就不会出现
  * "有的地方带 v 有的不带"这种只在某些版本上才炸的拼接错误。
  */

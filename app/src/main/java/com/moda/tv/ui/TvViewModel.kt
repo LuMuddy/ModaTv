@@ -1903,7 +1903,7 @@ class TvViewModel(private val app: Context) : ViewModel() {
 
         // 落地目录必须走 UpdateInstaller.updateDir：只有它对应 file_paths.xml 里
         // cache-path(name="update", path="update/")，换到别处 FileProvider 会直接抛
-        val dest = File(UpdateInstaller.updateDir(app), "ModaTv-${info.versionName}.apk")
+        val dest = File(UpdateInstaller.updateDir(app), "ModaTv${info.versionName}.apk")
 
         // 镜像不稳（实测经常被重置连接），重试必须能复用已经下好的包：
         // 每次从 0 重下等于把流量白烧一遍，而用户看到的只是进度条永远从头开始。

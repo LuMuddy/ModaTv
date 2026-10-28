@@ -15,6 +15,11 @@ val localSecrets = Properties().apply {
 
 fun secret(key: String): String = localSecrets.getProperty(key).orEmpty()
 
+// 发版时 CI 从 git tag 推导，用 -Pmodatv.versionName / -Pmodatv.versionCode 覆盖。
+// 先算成变量：产物文件名也要拿版本号，只写在 defaultConfig 里就取不到了。
+val appVersionName = (project.findProperty("modatv.versionName") as String?) ?: "1.0.1"
+val appVersionCode = (project.findProperty("modatv.versionCode") as String?)?.toIntOrNull() ?: 10001
+
 android {
     namespace = "com.moda.tv"
     compileSdk = 35
@@ -23,14 +28,13 @@ android {
         applicationId = "com.moda.tv"
         minSdk = 23
         targetSdk = 34
-        // 发版时由 CI 从 git tag 推导，用 -Pmodatv.versionName / -Pmodatv.versionCode 覆盖；
-        // 本地不带 -P 构建就走这里的默认值，所以不必为了发一次版先改代码再提交一次。
+        // 本地不带 -P 构建就走上面那对默认值，所以不必为了发一次版先改代码再提交一次。
         //
         // versionCode 的编码是 major*10000 + minor*100 + patch（1.0.1 → 10001），
         // CI 用同一条公式从 tag 复算，两处对不上就是发版事故——改公式时两边一起改。
         // 每个版本段必须小于 100，否则会串段（1.0.100 与 1.1.0 撞号）。
-        versionCode = (project.findProperty("modatv.versionCode") as String?)?.toIntOrNull() ?: 10001
-        versionName = project.findProperty("modatv.versionName") as String? ?: "1.0.1"
+        versionCode = appVersionCode
+        versionName = appVersionName
 
         /**
          * 只保留 TV 盒子真正常见的两个 ABI。
@@ -81,6 +85,27 @@ android {
         buildConfig = true
     }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+}
+
+/**
+ * 产物文件名固定成 ModaTv<版本>.apk。
+ *
+ * 这个名字是三处契约之一：Release 上挂的 asset 名、客户端拼的直链
+ * （data/UpdateSource.kt 的 apkUrl）、以及这里——客户端不扫 asset 列表，拿版本号直接拼 URL，
+ * 差一个连字符就是一个 404。改名字要三处一起改，且已装的老客户端会拿旧名字拼地址。
+ *
+ * outputFileName 只存在于 VariantOutputImpl（AGP 公开 API 没有这个口子），
+ * 升级 AGP 后这里编译不过就是它变了；真取不到时 CI 会以「找不到 ModaTv<版本>.apk」报错，
+ * 不会静默发出去一个叫 app-release.apk 的资产。
+ */
+androidComponents {
+    onVariants(selector().withBuildType("release")) { variant ->
+        variant.outputs.forEach { output ->
+            (output as? com.android.build.api.variant.impl.VariantOutputImpl)
+                ?.outputFileName
+                ?.set("ModaTv${appVersionName}.apk")
+        }
+    }
 }
 
 dependencies {

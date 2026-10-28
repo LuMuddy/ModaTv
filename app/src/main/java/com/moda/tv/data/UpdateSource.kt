@@ -21,7 +21,7 @@ import org.xmlpull.v1.XmlPullParserException
  * 而我们在意的只有「最新一版的版本号 + 更新日志」这两件事，feed 里都有。
  *
  * 为什么 APK 地址靠版本号拼、不查 API：CI（.github/workflows/android-release.yml）
- * 在推 `v*` tag 时把 asset 固定命名成 `ModaTv-<version>.apk`，
+ * 在推 `v*` tag 时把 asset 固定命名成 `ModaTv<version>.apk`，
  * 于是「版本号 → 直链」是一条确定的函数关系，少一次网络往返。
  */
 object UpdateSource {
@@ -209,7 +209,7 @@ object UpdateSource {
         return UpdateInfo(
             versionName = version,
             notes = stripHtml(content),
-            apkUrl = "https://github.com/$OWNER/$REPO/releases/download/v$version/ModaTv-$version.apk",
+            apkUrl = "https://github.com/$OWNER/$REPO/releases/download/v$version/ModaTv$version.apk",
         )
     }
 
