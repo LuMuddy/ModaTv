@@ -1,6 +1,7 @@
 package com.moda.tv.ui
 
 import android.content.Context
+import android.content.Intent
 import android.util.Log
 import androidx.annotation.StringRes
 import androidx.compose.runtime.getValue
@@ -10,14 +11,17 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.moda.tv.BuildConfig
 import com.moda.tv.R
-import com.moda.tv.data.Api
 import com.moda.tv.data.ApiException
+import com.moda.tv.data.Auth
+import com.moda.tv.data.AuthSignal
 import com.moda.tv.data.Repo
-import com.moda.tv.data.SaveOutcome
-import com.moda.tv.data.local.ApiEndpoint
-import com.moda.tv.data.local.ApiSettingsStore
-import com.moda.tv.data.local.ApiSettingsStoreImpl
+import com.moda.tv.data.UpdateDownloader
+import com.moda.tv.data.UpdateSource
+import com.moda.tv.data.local.AuthSession
+import com.moda.tv.data.local.AuthSessionStore
+import com.moda.tv.data.local.AuthSessionStoreImpl
 import com.moda.tv.data.local.CompletedStore
 import com.moda.tv.data.local.CompletedStoreImpl
 import com.moda.tv.data.local.FavoritesStore
@@ -35,6 +39,9 @@ import com.moda.tv.data.local.PlayerSettings
 import com.moda.tv.data.local.PlayerSettingsStore
 import com.moda.tv.data.local.PlayerSettingsStoreImpl
 import com.moda.tv.data.local.SearchHistoryStoreImpl
+import com.moda.tv.data.local.UpdateCheckStore
+import com.moda.tv.data.local.UpdateCheckStoreImpl
+import com.moda.tv.data.local.VersionRules
 import com.moda.tv.model.AppError
 import com.moda.tv.model.Danmaku
 import com.moda.tv.model.Episode
@@ -43,12 +50,16 @@ import com.moda.tv.model.HomeTab
 import com.moda.tv.model.LibraryEntry
 import com.moda.tv.model.SeriesDetail
 import com.moda.tv.model.Tier
+import com.moda.tv.model.UpdateInfo
+import com.moda.tv.ui.update.UpdateInstaller
+import java.io.File
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -1687,71 +1698,6 @@ class TvViewModel(private val app: Context) : ViewModel() {
         startPlayer(dest)
     }
 
-    // ---------------- 设置 ----------------
-
-    private val apiSettings: ApiSettingsStore = ApiSettingsStoreImpl.create(app)
-
-    /** 设置页"当前代理网址"的数据源；store 里没存过时给出的就是 Api.DEFAULT_BASE */
-    val apiBase: StateFlow<String> = apiSettings.baseUrl
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), Api.BASE)
-
-    /**
-     * 校验 → 探活 → 落盘，三步都过才写。
-     * 返回 null 表示已生效；否则是给用户看的原因，且此时**什么都没写**（回滚天然成立：
-     * 失败路径上既没有 store 写入也没有改 [Api.BASE]，旧地址原样继续用）。
-     */
-    suspend fun saveApiBase(raw: String): String? = when (val r = commitApiBase(raw)) {
-        is SaveOutcome.Ok -> null
-        is SaveOutcome.Fail -> r.reason
-    }
-
-    /**
-     * 与 [saveApiBase] 同一套校验，但返回结构化结果。
-     * 局域网弹窗用它拿到"规范化后的实际地址"，从而回显真正生效的那一条。
-     *
-     * [SaveOutcome.Fail] 携带的仍是**本地化好的句子**而不是 [AppError]：这条 reason
-     * 会被局域网页面直接拼进手机端 HTML，而 [AppError] 里没有承载「输入校验失败」的类别。
-     * 所以三处失败原因一律取 string 资源——不写字面量，界面与手机页面才会同时有中英两份。
-     */
-    suspend fun commitApiBase(raw: String): SaveOutcome {
-        val normalized = ApiEndpoint.normalize(raw)
-            ?: return SaveOutcome.Fail(app.getString(R.string.state_settings_url_format))
-        val failure = ApiEndpoint.probe(normalized)
-        if (failure != null) {
-            // probe 只带资源 id（数据层不持文案），句子在这里按当前语言取；
-            // detail 是 HTTP 状态码 / okhttp 原文这类技术信息，只填进 %1$s 占位符
-            val reason = failure.detail
-                ?.let { app.getString(failure.messageRes, it) }
-                ?: app.getString(failure.messageRes)
-            return SaveOutcome.Fail(app.getString(R.string.state_settings_url_unreachable, reason))
-        }
-        return try {
-            apiSettings.save(normalized)
-            // 先落盘再切内存值：保存失败时用户看到的仍是旧地址，不会出现"界面新、请求旧"
-            Api.BASE = normalized
-            SaveOutcome.Ok(normalized)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w("TvViewModel", "代理网址落盘失败：${e.message}")
-            val reason = app.getString(R.string.state_settings_storage_unwritable)
-            SaveOutcome.Fail(app.getString(R.string.state_settings_save_failed, reason))
-        }
-    }
-
-    /** 恢复默认：删键 + 立刻注入默认地址，不需要重启 */
-    suspend fun resetApiBase() {
-        try {
-            Api.BASE = apiSettings.reset()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            // 删键失败也要把内存值掰回默认，否则界面显示默认、请求还打旧地址
-            Api.BASE = Api.DEFAULT_BASE
-            throw e
-        }
-    }
-
     // ---------------- 数据管理 ----------------
 
     /** 搜索历史是搜索页私有的 store（不进 VM），设置页要清它只能自己拿一个实例 */
@@ -1765,6 +1711,228 @@ class TvViewModel(private val app: Context) : ViewModel() {
                 // 清空失败不弹错、不崩溃
             }
         }
+    }
+
+    // ---------------- 版本更新 ----------------
+
+    /** 用户「忽略此版本」的落盘位置（moda_update_check）；store 只管读写，判断全在下面 */
+    private val updateCheckStore: UpdateCheckStore = UpdateCheckStoreImpl.create(app)
+
+    /**
+     * 更新弹窗的状态机（六种状态见 UpdateDialog.kt 顶部的 [UpdateUi]），UI 只按它渲染。
+     *
+     * [UpdateUi.Idle] / [UpdateUi.Latest] 时 AppRoot 不渲染弹窗——「没检测到就没有」，
+     * 也不造"已是最新"的弹窗：检查更新是附属功能，没有新版就该安静，凭空弹一屏只能打断正在看剧的人。
+     * 两者的区别只在「关于」页那一行：[Latest] 表示查成功了、确实是最新，[Idle] 表示没东西可展示。
+     */
+    var updateUi by mutableStateOf<UpdateUi>(UpdateUi.Idle)
+        private set
+
+    /**
+     * 下载进度单独一条通道。
+     *
+     * **必须用 StateFlow 而不是 mutableStateOf**：[UpdateDownloader.download] 的 onProgress
+     * 在 IO 线程上被回调（每 64KB 一次），而 Compose 快照状态只该在 UI 线程写。
+     * 跨线程写快照会和正在应用的帧并发，轻则丢一次重排、重则抛
+     * "Reading a state that was modified" 这类只有真机上偶发的异常。StateFlow 自带线程安全，
+     * UI 侧 collectAsState 之后自然回到主线程读。
+     */
+    private val _updateProgress = MutableStateFlow(UpdateProgress())
+    val updateProgress: StateFlow<UpdateProgress> = _updateProgress.asStateFlow()
+
+    /** 检查任务的唯一把手：新检查先取消旧的，同一时刻只允许一个检查在飞 */
+    private var updateCheckJob: Job? = null
+
+    /** 下载任务的唯一把手；「取消下载」「以后再说」都靠它把任务掐掉 */
+    private var updateDownloadJob: Job? = null
+
+    /** 已经跳去系统「安装未知来源」授权页、等回来自动续装 */
+    private var pendingInstall = false
+
+    /** 待装的那个包；与 [pendingInstall] 同生同死，避免回来时找不到文件 */
+    private var pendingApk: File? = null
+
+    /**
+     * 检查新版本。
+     *
+     * 检查只看版本号，**不把网络状况算进来**：查不到（网络故障、HTTP 错误、仓库里还没有
+     * Release）就当作「没有更新」落 [UpdateUi.Latest]，不弹「检查失败」的窗——附属功能失败
+     * 不阻断主流程，用户也不该为一次连不上多按一次遥控器。细节只留在中文日志里（不上屏）。
+     *
+     * @param manual 现在只剩一个作用：是否先把状态置成 [UpdateUi.Checking]（让「关于」页那一行
+     *        显示「检查中…」）。true = 用户点按，false = 启动时的静默检查；成败的落点完全一样。
+     */
+    fun checkUpdate(manual: Boolean) {
+        // 同一时刻只允许一个检查在飞：连点「检查更新」不该堆出两个请求
+        updateCheckJob?.cancel()
+        if (manual) updateUi = UpdateUi.Checking
+        // 新一轮检查从零开始：上一轮下载失败留下的进度条不该带进这一轮
+        _updateProgress.value = UpdateProgress()
+        updateCheckJob = viewModelScope.launch {
+            try {
+                val latest = Repo.latestRelease()
+                // 版本比较是纯函数（VersionRules），预发布后缀不参与强弱判定
+                if (!VersionRules.isNewer(latest.versionName, BuildConfig.VERSION_NAME)) {
+                    // 查成功了、确认已是最新：落 Latest 而不是 Idle——Idle 是"没得说"，
+                    // 拿去显示「已是最新」会让冷启动那几帧和联网失败后都在说谎
+                    updateUi = UpdateUi.Latest
+                    return@launch
+                }
+                // 用户选过「忽略此版本」：同一个版本号不再打扰；更新的版本号照旧提示。
+                // 这里必须是 Idle 而不是 Latest：忽略的是"有新版本但我不想知道"，
+                // 说成「已是最新」等于把一件不是事实的事说出来。
+                if (updateCheckStore.ignoredVersion() == latest.versionName) {
+                    updateUi = UpdateUi.Idle
+                    return@launch
+                }
+                updateUi = UpdateUi.Available(latest)
+            } catch (e: CancellationException) {
+                // 被新一轮检查取消：什么都不改，新那一轮负责落到终态
+                throw e
+            } catch (e: Exception) {
+                // 一切检查失败（网络、HTTP、EmptyPayload）都当作「没有更新」：
+                // 检查更新的唯一职责是判版本，判不出来就不该打扰用户，所以这里是 Latest 不是
+                // Failed——检查阶段不产出任何弹窗。日志保留：中文、不上屏，便于排错。
+                Log.i("TvViewModel", "检查更新失败，当作没有更新：${e.toAppError()}")
+                updateUi = UpdateUi.Latest
+            }
+        }
+    }
+
+    /**
+     * 「立即更新」/ 下载失败后重试 / Ready 时的「立即安装」，共用这一个入口。
+     *
+     * 已在磁盘上的包直接复用（见下面的注释），所以 UI 不需要第二个 VM 方法做"只安装"。
+     */
+    fun downloadUpdate() {
+        val info = when (val state = updateUi) {
+            is UpdateUi.Available -> state.info
+            is UpdateUi.Ready -> state.info
+            is UpdateUi.Failed -> state.info
+            // Idle / Checking / 检查失败（info 为 null）都没有可下载的目标
+            else -> null
+        } ?: return
+        if (updateDownloadJob?.isActive == true) return
+
+        // 落地目录必须走 UpdateInstaller.updateDir：只有它对应 file_paths.xml 里
+        // cache-path(name="update", path="update/")，换到别处 FileProvider 会直接抛
+        val dest = File(UpdateInstaller.updateDir(app), "ModaTv-${info.versionName}.apk")
+
+        // 镜像不稳（实测经常被重置连接），重试必须能复用已经下好的包：
+        // 每次从 0 重下等于把流量白烧一遍，而用户看到的只是进度条永远从头开始。
+        // UpdateDownloader 先写 .tmp 再 rename，所以「正式文件名存在且非空」就等于「这个包是完整的」。
+        if (dest.exists() && dest.length() > 0L) {
+            updateUi = UpdateUi.Ready(info, dest)
+            startInstall(info, dest)
+            return
+        }
+
+        updateUi = UpdateUi.Downloading(info)
+        _updateProgress.value = UpdateProgress(0L, 0L)
+        updateDownloadJob = viewModelScope.launch {
+            try {
+                var lastEmittedBytes = 0L
+                var lastEmittedPercent = -1
+                // 候选源（镜像 + 直连）由取数层决定：ViewModel 不该知道镜像前缀长什么样
+                val apk = UpdateDownloader.download(UpdateSource.apkUrls(info), dest) { downloaded, total ->
+                    // 这个回调在 IO 线程上跑：只写 StateFlow（线程安全），绝不碰 Compose 快照状态
+                    val percent = if (total > 0L) ((downloaded * 100L) / total).toInt() else -1
+                    // 节流：百分比每变 1 点、或累计又下了 256KB，才推一次。
+                    // 不节流时 64KB 一次回调 = 100MB 的包推 1600 次，弹窗每秒重组几十次；
+                    // 只按百分比节流又会让"长度未知"的响应永远不动，所以两条条件都留。
+                    if (percent != lastEmittedPercent || downloaded - lastEmittedBytes >= PROGRESS_BYTES_STEP) {
+                        lastEmittedPercent = percent
+                        lastEmittedBytes = downloaded
+                        _updateProgress.value = UpdateProgress(downloaded, total)
+                    }
+                }
+                // 下载期间用户按了「取消下载」：协程已被 cancel，但 download 可能刚好在这一刻返回。
+                // 不判这一次的话，这里会把状态拉回 Ready，用户关掉的弹窗自己又冒出来。
+                if (!isActive) return@launch
+                updateUi = UpdateUi.Ready(info, apk)
+                startInstall(info, apk)
+            } catch (e: CancellationException) {
+                // 取消 = 用户放弃本次下载，状态已由 dismissUpdate 落成 Idle，这里不许覆盖
+                throw e
+            } catch (e: Exception) {
+                updateUi = UpdateUi.Failed(info, e.toAppError())
+            }
+        }
+    }
+
+    /**
+     * 把包交给系统安装器；没拿到「安装未知来源」授权就先跳授权页，回来自动续装。
+     *
+     * 失败一律落状态、不往上抛：安装器接不了 Intent 只说明这台设备装不了，
+     * 不该让看剧的主流程跟着崩。
+     */
+    private fun startInstall(info: UpdateInfo, apk: File) {
+        if (!UpdateInstaller.canInstall(app)) {
+            // 记一笔：AppRoot 的 ON_RESUME 会调 onReturnedFromForeground() 补装
+            pendingInstall = true
+            pendingApk = apk
+            // 这里是从 ViewModel（非 Activity 上下文）起 Intent，必须补 NEW_TASK，
+            // 否则系统直接抛 AndroidRuntimeException
+            runCatching {
+                app.startActivity(UpdateInstaller.settingsIntent(app).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }.onFailure { Log.i("TvViewModel", "跳安装授权页失败：$it") }
+            return
+        }
+        pendingInstall = false
+        pendingApk = null
+        if (!UpdateInstaller.install(app, apk)) {
+            // false = 没有安装器能接这个 MIME（裁剪过的盒子/企业管控），不是抛异常
+            updateUi = UpdateUi.Failed(info, AppError.Unknown)
+        }
+    }
+
+    /**
+     * 用户从系统「安装未知来源」授权页回来了（AppRoot 在 ON_RESUME 里调）。
+     *
+     * 只在「确实有一笔待装的包」且「这会儿真的拿到授权了」时才动手：
+     * 无条件续装会让每次回到前台都弹一次安装器，正在看播放页的用户会被直接打断。
+     * 失败保持 pending——系统可能只是拒绝了一次，用户再进一次授权页回来还能重试。
+     */
+    fun onReturnedFromForeground() {
+        if (!pendingInstall) return
+        val apk = pendingApk
+        if (apk == null) {
+            pendingInstall = false
+            return
+        }
+        if (!UpdateInstaller.canInstall(app)) return
+        if (UpdateInstaller.install(app, apk)) {
+            // 装上之后本进程很快会被系统杀掉重启，这里只把状态收干净
+            pendingInstall = false
+            pendingApk = null
+            updateUi = UpdateUi.Idle
+        }
+    }
+
+    /** 「忽略此版本」：记下这个版本号，之后同一版本不再打扰（更新的版本照旧提示） */
+    fun ignoreUpdate() {
+        val info = (updateUi as? UpdateUi.Available)?.info ?: return
+        viewModelScope.launch {
+            // 落盘失败也要关弹窗：用户这一下要的是"别再问我"，不该再看到一次失败
+            runCatching { updateCheckStore.ignore(info.versionName) }
+            updateUi = UpdateUi.Idle
+        }
+    }
+
+    /**
+     * 「以后再说」/ 返回键 / 点弹窗外。
+     *
+     * 下载中关弹窗 = **放弃本次下载**：不取消任务的话，用户以为已经关掉了，后台却还在把
+     * 整个 APK 拉完并自己拉起安装器——那是最容易被当成"应用自己偷偷装东西"的行为。
+     * 已下好的半截包由 UpdateDownloader 写成 .tmp，不占正式文件名，下次重下不复用。
+     */
+    fun dismissUpdate() {
+        updateDownloadJob?.cancel()
+        updateDownloadJob = null
+        // 待装状态一并清掉：用户已经用关闭表达过"现在不装"，回来时不该再自己弹安装器
+        pendingInstall = false
+        pendingApk = null
+        updateUi = UpdateUi.Idle
     }
 
     private companion object {
@@ -1791,6 +1959,14 @@ class TvViewModel(private val app: Context) : ViewModel() {
          * 若改成按窗口末尾判断，进度每秒上报一次就会变成每秒一次 HTTP。
          */
         const val DANMAKU_REFRESH_WITHIN_MS = 30_000L
+
+        /**
+         * 下载进度的字节节流步长：累计又下了 256KB 才推一次进度。
+         *
+         * 配合「百分比变化」一起用：长度已知时百分比先触发（大包上 1% 远大于 256KB），
+         * 长度未知时只有这条能保证进度条不是死的。
+         */
+        const val PROGRESS_BYTES_STEP = 256L * 1024L
 
         /** 整页刷新时同时最多几个 tab：见 refreshAllHome 的说明，别调大 */
         const val HOME_TAB_PARALLEL = 6

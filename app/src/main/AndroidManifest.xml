@@ -3,6 +3,10 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- REQUEST_INSTALL_PACKAGES 是应用内自助更新的硬前提：API 26+ 起系统不再提供
+         全局「未知来源」开关，装 APK 的权限按应用逐个授予，清单里没声明这个权限时
+         startActivity(ACTION_VIEW, apk) 会被系统直接拒绝——用户连去设置里打开的机会都没有。 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <uses-feature
         android:name="android.software.leanback"
@@ -38,5 +42,18 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 安装器读不到本应用的 cacheDir，只能用 content:// 递一个临时读权限过去。
+             exported=false：别的应用不能主动来拿；grantUriPermissions=true 才是给安装器的授权方式，
+             范围由 file_paths.xml 限定为 cache/update/ 一个子目录。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

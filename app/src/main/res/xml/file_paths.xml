@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 只暴露 cache/update/ 一个子目录：安装包放在这里，安装器拿到的 URI 也只能落在这一层。
+     不用 root-path / external-path —— 那等于把整个内部存储或外部存储交给拿到 URI 的一方，
+     而这里实际只需要一个目录。 -->
+<paths>
+    <cache-path name="update" path="update/" />
+</paths>

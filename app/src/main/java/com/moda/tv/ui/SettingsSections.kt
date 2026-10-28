@@ -686,24 +686,33 @@ internal fun NetworkSettingsSection(
 // ==================== 三、关于 ====================
 
 /**
- * 关于子页：五行只读信息 + 一行版权声明入口。
+ * 关于子页：五行只读信息 + 一行「检查更新」+ 一行版权声明入口。
  *
  * 版权声明入口放在这里而不是顶层菜单页：菜单页那三张卡是"进去改东西"，
  * 而这一页本来就是"看看这软件是什么"，用户想回看声明时第一反应是来这里找版本号旁边。
- * 既然本页出现了一行可点的，它就必须是**唯一**可聚焦的那一行——
- * 上面五行纯展示行不带箭头也不可聚焦（SettingRow 的 onClick 为 null 就是裸 Box），
- * 遥控器按下键会直接落到它身上，不会在只读行之间空转。
+ * 「检查更新」同理：它是"这个软件现在是什么版本"的延伸，放在版本号与构建号正下方。
+ *
+ * **本页从此有两行可聚焦**：上面五行纯展示行不带箭头也不可聚焦
+ * （SettingRow 的 onClick 为 null 就是裸 Box），可聚焦的只有「检查更新」与版权声明。
+ * 两行都挂 itemModifier 下标，遥控器上下键在它们之间直接跳，不在只读行之间空转。
+ * 首焦点给「检查更新」——它是本页唯一有动作的一行（点一下就开始查），
+ * 版权声明是"回头再看"的次要出口，留在最后一行。
  */
 @Composable
 internal fun AboutSettingsSection(
     /** 重看版权声明；真正的弹窗挂在 AppRoot 上，与启动时自动弹出的那一个是同一个 */
     onOpenCopyright: () -> Unit,
+    /** 当前更新状态：这一行的值完全由它决定（检查中/发现 vX/已是最新…） */
+    updateUi: UpdateUi,
+    /** 点「检查更新」：manual = true，失败会在这个弹窗里说出来 */
+    onCheckUpdate: () -> Unit,
     versionName: String = BuildConfig.VERSION_NAME,
     versionCode: Int = BuildConfig.VERSION_CODE,
 ) {
-    // 本页唯一可聚焦的一行就是版权声明，首焦点直接给它：与其它两个子页同一个理由
+    // 首焦点给「检查更新」：与其它两个子页同一个理由
     // （不给的话从菜单页进来屏幕上一个白圈都没有，用户得先乱按一下方向键才找得到光标）。
-    // 代价是进页面时滚动会把它摆到舒适位置，最上面的「应用名称」被推出视口一点点。
+    // 全页只有 firstFocus 一个 FocusRequester 实例、只挂在「检查更新」这一行上，
+    // 所以不存在两个节点抢同一个请求：版权声明行不挂 requester，只靠方向键走到。
     val firstFocus = remember { FocusRequester() }
     SettingsSectionScaffold(
         title = stringResource(SettingsSectionId.About.titleRes),
@@ -725,24 +734,57 @@ internal fun AboutSettingsSection(
                 stringResource(R.string.settings_about_build), versionCode.toString(),
                 modifier = Modifier.then(columnFocus.itemModifier(2)),
             )
+            // 「检查更新」紧贴构建号下方：用户找版本信息时视线就在这一块，
+            // 值直接显示当前状态（检查中… / 发现 vX / 已是最新），点一下才发请求。
+            // 没有新版本时这里显示「已是最新」，但**不弹窗**——"没检测到就没有"。
             SettingRow(
-                stringResource(R.string.settings_about_android), androidVersion(),
+                label = stringResource(R.string.update_row_title),
+                value = updateRowValue(updateUi),
+                chevron = true,
+                focusRequester = firstFocus,
+                onClick = onCheckUpdate,
                 modifier = Modifier.then(columnFocus.itemModifier(3)),
             )
             SettingRow(
-                stringResource(R.string.settings_about_resolution), resolutionText(),
+                stringResource(R.string.settings_about_android), androidVersion(),
                 modifier = Modifier.then(columnFocus.itemModifier(4)),
+            )
+            SettingRow(
+                stringResource(R.string.settings_about_resolution), resolutionText(),
+                modifier = Modifier.then(columnFocus.itemModifier(5)),
             )
             SettingRow(
                 label = stringResource(R.string.copyright_title),
                 value = stringResource(R.string.settings_copyright_value),
                 chevron = true,
-                focusRequester = firstFocus,
                 onClick = onOpenCopyright,
-                modifier = Modifier.then(columnFocus.itemModifier(5)),
+                modifier = Modifier.then(columnFocus.itemModifier(6)),
             )
         }
     }
+}
+
+/**
+ * 「检查更新」那一行的当前值（这一行的值 = 更新状态机的读法）。
+ *
+ * - Latest 说「已是最新」：只有它代表检查真的跑完并确认过（含仓库还没有 Release）；
+ * - Idle 说「点按检查」：它同时表示"还没查过""静默检查在飞""静默检查失败了"，
+ *   拿它显示「已是最新」会让冷启动那几帧和联网失败后都在说谎——宁可空也不冒充；
+ * - Failed 说「点按检查」：包没装成功但检查本身是成功的，说「已是最新」会与弹窗里的失败说明互相打脸，
+ *   给一句邀请重试的文案更诚实；
+ * - 检查中 / 已发现新版（下载中、待安装都算）各自给对应文案。
+ *
+ * 只做文案映射，不做任何判断：状态机在 TvViewModel，这一行不该有自己的第二套结论。
+ */
+@Composable
+private fun updateRowValue(state: UpdateUi): String = when (state) {
+    is UpdateUi.Checking -> stringResource(R.string.update_checking)
+    is UpdateUi.Available -> stringResource(R.string.update_row_found, state.info.versionName)
+    is UpdateUi.Downloading -> stringResource(R.string.update_row_found, state.info.versionName)
+    is UpdateUi.Ready -> stringResource(R.string.update_row_found, state.info.versionName)
+    is UpdateUi.Latest -> stringResource(R.string.update_row_latest)
+    is UpdateUi.Idle -> stringResource(R.string.update_row_idle)
+    is UpdateUi.Failed -> stringResource(R.string.update_row_idle)
 }
 
 // ==================== 共用行组件 ====================

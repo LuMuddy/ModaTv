@@ -700,4 +700,13 @@ object Repo {
         // rank 相同保持 eps 原顺序（sortedBy 是稳定排序）
         return rows.sortedBy { it.first }.mapIndexed { i, (_, ep) -> ep.copy(index = i) }
     }
+
+    /**
+     * GitHub 最新 Release 的版本号 / 更新日志 / APK 直链。
+     *
+     * 与 [Api] 无关：Api 走的是自研代理，而版本信息只在 GitHub 本体上，所以这里直接转给
+     * [UpdateSource]。仍然从 Repo 出去，是为了让屏幕层只需要认识一个数据门面——
+     * 它不该知道某个功能的数据来自哪一家。
+     */
+    suspend fun latestRelease(): UpdateInfo = UpdateSource.latest()
 }
