@@ -16,7 +16,7 @@
     <string name="settings_title">设置</string>
     <string name="settings_subtitle">修改后立即生效，无需重启应用。</string>
     <string name="settings_group_playback_title">播放设置</string>
-    <string name="settings_group_playback_desc">播放器内核、解码方式、默认倍速与片头片尾跳过</string>
+    <string name="settings_group_playback_desc">播放器内核、解码方式、默认倍速与弹幕开关</string>
     <string name="settings_group_network_title">网络与数据</string>
     <string name="settings_group_network_desc">授权状态与本地数据清理</string>
     <string name="settings_group_about_title">关于</string>
