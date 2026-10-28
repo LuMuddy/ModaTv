@@ -2,15 +2,18 @@
 # local.properties 同时需要 sdk.dir，例如：
 #   sdk.dir=/path/to/Android/sdk
 #
-# 构建时这些键会被注入为 BuildConfig 字段，代码里不保存任何真实值。
-
-# 代理后端地址，对应 BuildConfig.API_BASE（留空则应用启动后直接报请求失败）
-modatv.apiBase=
-
-# 设备令牌与指纹，对应 BuildConfig.DEVICE_TOKEN / BuildConfig.DEVICE_FP
-modatv.deviceToken=
-modatv.deviceFp=
+# 构建时这里的键会被注入为 BuildConfig 字段，代码里不保存任何真实值。
+# 代理地址与鉴权授权码不在这里：地址是代码常量（Api.BASE），
+# 授权码由用户在设置页手动输入或扫码输入，换回来的 token 存在应用自己的 DataStore 里。
 
 # 腾讯热词接口凭据，对应 BuildConfig.HOT_WORDS_APP_ID / BuildConfig.HOT_WORDS_APP_KEY
 modatv.hotWordsAppId=
 modatv.hotWordsAppKey=
+
+# release 签名密钥。这四行缺省时不建 signingConfig，assembleRelease 出的是
+# app-release-unsigned.apk（装不上）；CI 上由 workflow 生成等价的 local.properties，
+# 值来自仓库 Secrets，所以这四行只对「本地打签名包」有用。
+modatv.keystoreFile=
+modatv.keystorePassword=
+modatv.keyAlias=
+modatv.keyPassword=
