@@ -200,9 +200,6 @@ minSdk 23 覆盖大多数电视盒子；Android TV / Google TV 模拟器可直�
 ## 项目结构
 
 ```
-AGENTS.md                         编码与协作的强制约定（分层、按键、兜底、存储、提交）
-CONTRIBUTING.md                   提交信息规范（Conventional Commits + 钩子校验）
-
 app/src/main/assets/index.html   手机端扫码配置页（LanConfigServer 读取后填充占位符）
 app/src/main/res/values/strings.xml       通用文案：设置页 / 设置子页 / 错误提示 / 公共词
 app/src/main/res/values/strings_*.xml     按模块拆分：core / data / data2 / detail / home /
@@ -238,7 +235,7 @@ app/src/main/java/com/moda/tv/
     └── theme/              颜色与字阶
 ```
 
-分层与编码约定见 [AGENTS.md](AGENTS.md)：UI 只调 `Repo`，异常在 ViewModel 内落成状态。
+分层与编码约定：UI 只调 `Repo`，异常在 ViewModel 内落成状态。
 
 ---
 
@@ -299,8 +296,7 @@ app/src/main/java/com/moda/tv/
 
 ## 贡献
 
-写代码前请先读 [AGENTS.md](AGENTS.md)（分层、遥控器纪律、降级兜底、存储约定）；
-提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。提交信息遵循 Conventional Commits：
+提交信息遵循 Conventional Commits：
 `<type>(<scope>): <中文描述>`，例如 `fix(player): 修复倍速切换后画面卡顿`。
 
 首次克隆后启用提交信息钩子（只需一次）：

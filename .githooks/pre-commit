@@ -63,7 +63,7 @@ fi
 if [ "$fail" -ne 0 ]; then
   say ""
   say "  修完再提交。确实无害时可用 git commit --no-verify 跳过（仅限紧急情况）。"
-  say "  约定见 AGENTS.md「提交与验证」与 CONTRIBUTING.md。"
+  say "  提交纪律：源码与资源进仓库，local.properties、构建产物、真实凭据不进。"
   exit 1
 fi
 

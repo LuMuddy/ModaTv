@@ -31,3 +31,9 @@ Thumbs.db
 
 # 私有后端契约（动作名、请求头、响应字段），只留在本地，不进仓库
 docs/BACKEND.md
+
+# 私有工程规则文档：给维护者与 AI 代理看的约定，只留在本地，不进公开仓库
+/AGENTS.md
+/CONTRIBUTING.md
+/docs/TV_RULES.md
+/docs/RELEASE.md

@@ -24,7 +24,7 @@ fail() {
   echo "  期望格式：<type>(<scope>): <中文描述>" >&2
   echo "  type：  $TYPE_LIST" >&2
   echo "  示例：  fix(player): 修复倍速切换后画面卡顿" >&2
-  echo "  详见：  CONTRIBUTING.md" >&2
+  echo "  详情见：README.md「贡献」" >&2
   echo "" >&2
   exit 1
 }
