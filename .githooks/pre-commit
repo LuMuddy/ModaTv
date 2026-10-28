@@ -42,8 +42,11 @@ if [ -n "$files" ]; then
     fail=1
   fi
 
-  # 2.3 连续 32 位以上的十六进制 / 40 位以上 base64：token、指纹、签名常见形态
-  hits=$(grep -nIE '[A-Fa-f0-9]{32,}|[A-Za-z0-9+/]{40,}={0,2}' $files 2>/dev/null || true)
+  # 2.3 连续 32 位以上的十六进制 / 40 位以上 base64：token、指纹、签名常见形态。
+  #     base64 那一支刻意不含 '/'：真密钥几乎不带斜杠，而带斜杠的长串基本都是
+  #     「tv/danmaku/ijk/media/player/IjkMediaPlayer」这类包名 / 符号名注释——
+  #     旧写法在 app/build.gradle.kts 上误报过一次，逼得那次提交只能 --no-verify。
+  hits=$(grep -nIE '[A-Fa-f0-9]{32,}|[A-Za-z0-9+]{40,}={0,2}' $files 2>/dev/null || true)
   if [ -n "$hits" ]; then
     say "✗ 疑似 token / 指纹 / 签名（长十六进制或 base64 串）："
     printf '    %s\n' $hits >&2
@@ -53,8 +56,10 @@ if [ -n "$files" ]; then
   # 2.4 公网 IP。loopback / 通配 / 内网 / 文档示例地址不算泄露，其余一律拦。
   ips=$(grep -hoIE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' $files 2>/dev/null | sort -u || true)
   for ip in $ips; do
+    # 113.45.77.172 是本项目自建代理的公网入口（Api.BASE）：它本来就打进每一个 APK、
+    # 所有用户都要连它，藏进仓库不增加任何保密性，所以显式放行；其余公网 IP 照拦。
     case "$ip" in
-      0.0.0.0|127.*|255.*|10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|192.0.2.*|198.51.100.*|203.0.113.*|1.2.3.4) continue ;;
+      0.0.0.0|127.*|255.*|10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|192.0.2.*|198.51.100.*|203.0.113.*|1.2.3.4|113.45.77.172) continue ;;
     esac
     if [ "$fail" -eq 0 ]; then say "✗ 提交内容里出现公网 IP："; fi
     say "    $ip"
