@@ -31,6 +31,21 @@ jobs:
           java-version: "17"
 
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          # 依赖缓存（~/.gradle/caches 里的 modules-2）由 action 自己管；
+          # gradle-home-cache-cleanup 让它在超限时自己清，否则缓存会越存越大。
+          cache-read-only: false
+          gradle-home-cache-cleanup: true
+
+      # action 管的依赖缓存不含 build-cache-1（实测 post 步骤 0 秒、构建仍是 291s 冷编译），
+      # 这里把 Gradle 的构建缓存单独挂出来：源码没动的任务直接复用上次的产物。
+      # key 带 sha（一次提交一份），restore-keys 兜底取最近的一份——只靠 sha 会永远 miss。
+      - uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches/build-cache-1
+          key: gradle-build-cache-${{ github.sha }}
+          restore-keys: |
+            gradle-build-cache-
 
       # 不用 android-actions/setup-android：v1.0.1 那次 CI 就死在它那一步
       # （job 记录：第 4 步 failure，第 5 步起全部 skipped，连「写入 local.properties」
@@ -113,7 +128,7 @@ jobs:
           VCODE=$(( MAJOR * 10000 + MINOR * 100 + PATCH ))
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "VCODE=$VCODE" >> "$GITHUB_ENV"
-          ./gradlew --no-daemon assembleRelease \
+          ./gradlew --no-daemon --build-cache assembleRelease \
             "-Pmodatv.versionName=$VERSION" \
             "-Pmodatv.versionCode=$VCODE"
 
